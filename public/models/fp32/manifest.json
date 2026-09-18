@@ -1,0 +1,62 @@
+{
+  "version": "lama-fp32-c3c0c9e468934d62e79c329e35d82dd09ff8c444",
+  "source": "https://huggingface.co/Carve/LaMa-ONNX",
+  "inputLayout": "image-mask",
+  "license": "Apache-2.0",
+  "totalSize": 208044816,
+  "sha256": "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+  "chunks": [
+    {
+      "file": "lama.part.000.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.001.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.002.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.003.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.004.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.005.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.006.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.007.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.008.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.009.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.010.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.011.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.012.bin",
+      "size": 6718224
+    }
+  ]
+}

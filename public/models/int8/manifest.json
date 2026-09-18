@@ -1,0 +1,26 @@
+{
+  "version": "lama-512-int8-418036c6b541e526cdbb0bead1ec3a87dabede53",
+  "source": "https://huggingface.co/g-ronimo/lama",
+  "inputLayout": "masked-rgb-mask",
+  "license": "Apache-2.0",
+  "totalSize": 62074990,
+  "sha256": "cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe",
+  "chunks": [
+    {
+      "file": "lama.part.000.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.001.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.002.bin",
+      "size": 16777216
+    },
+    {
+      "file": "lama.part.003.bin",
+      "size": 11743342
+    }
+  ]
+}

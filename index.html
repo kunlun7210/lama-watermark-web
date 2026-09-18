@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1422" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2370e0b6'/%3E%3Cpath d='M16 35h32M22 25h20M27 45h10' stroke='%23081420' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E" />
+    <title>LaMa iPhone 可行性测试</title>
+    <script>
+      window.coi = {
+        coepCredentialless: () => false,
+        coepDegrade: () => true,
+        quiet: true,
+      }
+    </script>
+    <script vite-ignore src="./coi-serviceworker.min.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <span class="eyebrow">本机浏览器推理 · 图片不会上传</span>
+        <h1>LaMa iPhone 可行性测试</h1>
+        <p>先用一张豆包生成图测试 iPhone 的内存、速度与效果。两个模型都在手机浏览器内运行，图片不会上传。</p>
+      </header>
+
+      <section class="card controls">
+        <fieldset class="model-picker">
+          <legend>选择模型</legend>
+          <label class="model-option">
+            <input type="radio" name="model" value="int8" checked />
+            <span><strong>INT8 · 62MB</strong><small>下载和内存压力较小，画质接近 FP32</small></span>
+          </label>
+          <label class="model-option">
+            <input type="radio" name="model" value="fp32" />
+            <span><strong>FP32 · 198MB</strong><small>更接近现有 Mac 版，用于画质基准</small></span>
+          </label>
+        </fieldset>
+        <label class="picker" for="file-input">
+          <strong>选择一张豆包图片</strong>
+          <span>支持 JPG、PNG、WebP；优先使用测试集中的图片</span>
+        </label>
+        <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
+        <p id="selected-name" class="selected-name" hidden></p>
+        <button id="run" type="button" disabled>加载所选模型并处理</button>
+        <button id="share" class="secondary" type="button" hidden>分享或保存结果</button>
+        <a id="download" class="secondary link-button" hidden>下载 PNG</a>
+      </section>
+
+      <section class="card status-card" aria-live="polite">
+        <div class="status-row">
+          <span id="status">等待选择图片</span>
+          <span id="progress-label"></span>
+        </div>
+        <progress id="progress" max="1" value="0"></progress>
+        <dl id="metrics" class="metrics"></dl>
+      </section>
+
+      <section class="preview-grid">
+        <figure class="card">
+          <figcaption>原图</figcaption>
+          <canvas id="source"></canvas>
+        </figure>
+        <figure class="card">
+          <figcaption>LaMa-ONNX 结果</figcaption>
+          <canvas id="result"></canvas>
+        </figure>
+      </section>
+
+      <p class="footnote">这是 iPhone 实机验证页，暂时只处理豆包右下角水印。首次打开会自动刷新一次以启用四线程；验证通过后再加入多平台规则、批量队列和 ZIP 导出。</p>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
