@@ -724,17 +724,6 @@ export async function createRuleEngine(assetBase) {
             else if (kernel[i] < 0) { ringSum += patch[i]; ringCount++ }
           }
           const probe = (px, py) => {
-            let total = 0
-            for (let i = 0; i < kernel.length; i++) {
-              const w = kernel[i]
-              if (w === 0) continue
-              const ky = Math.floor(i / markWidth)
-              const kx = i - ky * markWidth
-              total += w * window[(py + ky) * (xMax - xMin + markWidth) + (px + kx)]
-            }
-            return Math.round(total * 100) / 100
-          }
-          const flatProbe = (px, py) => {
             const patch = subArray(gray, width, xMin + px, yMin + py, markWidth, markHeight)
             let total = 0
             for (let i = 0; i < kernel.length; i++) total += kernel[i] * patch[i]
@@ -748,10 +737,6 @@ export async function createRuleEngine(assetBase) {
             window: [xMin, yMin, xMax, yMax],
             min: Math.round(hit.min * 100) / 100, minLocation: [hit.minX, hit.minY],
             max: Math.round(hit.max * 100) / 100, maxLocation: [hit.maxX, hit.maxY],
-            probe10_11: probe(10, 11),
-            flatProbe10_11: flatProbe(10, 11),
-            flatProbeBest: flatProbe(useMin ? hit.minX : hit.maxX, useMin ? hit.minY : hit.maxY),
-            probeMaxLocation: probe(hit.maxX, hit.maxY),
             probeBest: probe((useMin ? hit.minX : hit.maxX), (useMin ? hit.minY : hit.maxY)),
             best: [bestX, bestY],
             insideMean: insideCount ? Math.round((insideSum / insideCount) * 100) / 100 : null,
