@@ -1125,6 +1125,8 @@ async function addFiles(files, { restored = false } = {}) {
   const latest = state.items[state.items.length - 1]
   elements.selectedName.hidden = false
   elements.selectedName.textContent = `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
+  // 同步标记：用户主动选图 = 下次打开可以恢复（localStorage 是同步落盘，关浏览器也不丢）
+  try { localStorage.setItem('lama-restore', '1') } catch { /* 忽略 */ }
   // 选完图立即在后台准备所选模型（下载/读缓存/校验），
   // 进度显示在第一屏的下载条里；点「开始批量处理」时模型已就绪
   void warmUpModel()
@@ -1184,8 +1186,11 @@ elements.stop.addEventListener('click', () => {
 
 elements.saveAll.addEventListener('click', () => { void saveAll() })
 
-elements.clear.addEventListener('click', () => {
+elements.clear.addEventListener('click', async () => {
   if (state.running) return
+  // 同步写清空标记：即使下面的 IndexedDB 删除还没落盘、用户立刻关浏览器，下次打开也据此跳过恢复
+  try { localStorage.setItem('lama-restore', '0') } catch { /* 忽略 */ }
+  await deleteStoredFiles()
   state.items.forEach(revokeItem)
   state.items = []
   state.currentId = null
@@ -1193,7 +1198,6 @@ elements.clear.addEventListener('click', () => {
   elements.selectedName.hidden = true
   elements.source.width = elements.source.height = 0
   elements.result.width = elements.result.height = 0
-  void deleteStoredFiles() // 清空列表同时清掉持久化缓存，否则下次打开还会恢复
   setStatus('等待选择图片', 0)
   setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
   renderQueue()
@@ -1201,6 +1205,8 @@ elements.clear.addEventListener('click', () => {
 
 async function restoreSelectedFiles() {
   try {
+    // 用户清空过（同步标记）就不恢复，即使 IndexedDB 删除因竞态没完成
+    if (localStorage.getItem('lama-restore') === '0') return
     const files = await readSelectedFiles()
     if (!files.length) return
     // 上次缓存的文件可能已被系统清理成空壳：先试解码第一张，坏掉就整体丢弃，
@@ -1217,6 +1223,7 @@ async function restoreSelectedFiles() {
     setStatus(`已恢复上次的 ${files.length} 张图片`, 0, '点「开始批量处理」继续')
   } catch (error) {
     console.warn('无法恢复上次图片', error)
+    try { localStorage.setItem('lama-restore', '0') } catch { /* 忽略 */ }
     await deleteStoredFiles()
     setStatus('上次的图片缓存已失效，请重新选择图片', 0, '浏览器清理过本地数据，这是正常的')
   }
