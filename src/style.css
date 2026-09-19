@@ -37,18 +37,18 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
   grid-template-columns: auto 1fr;
   grid-template-areas: "icon title" "icon hint";
   align-items: center;
-  gap: 4px 14px;
-  padding: 18px;
+  gap: 2px 12px;
+  padding: 12px 14px;
   border: 2px solid #70e0b6;
-  border-radius: 16px;
+  border-radius: 14px;
   background: linear-gradient(180deg, rgba(112, 224, 182, .16) 0%, rgba(112, 224, 182, .06) 100%);
   box-shadow: 0 0 0 4px rgba(112, 224, 182, .10);
   cursor: pointer;
 }
 .picker:active { transform: scale(.995); }
-.picker-icon { grid-area: icon; width: 46px; height: 46px; border-radius: 50%; background: #70e0b6; color: #07120e; font-size: 30px; font-weight: 700; line-height: 1; display: grid; place-items: center; }
-.picker-title { grid-area: title; font-size: 18px; font-weight: 800; color: #a7f0d2; }
-.picker-hint { grid-area: hint; color: #b9c6d8; font-size: 13.5px; line-height: 1.45; }
+.picker-icon { grid-area: icon; width: 38px; height: 38px; border-radius: 50%; background: #70e0b6; color: #07120e; font-size: 24px; font-weight: 700; line-height: 1; display: grid; place-items: center; }
+.picker-title { grid-area: title; font-size: 16px; font-weight: 800; color: #a7f0d2; }
+.picker-hint { grid-area: hint; color: #b9c6d8; font-size: 13px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 原生文件框隐藏：只留上面那个醒目入口，标签点击依然能唤起系统选择器 */
 #file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .selected-name { margin: 0; color: #75d7b4; font-size: 14px; overflow-wrap: anywhere; }
@@ -57,7 +57,7 @@ button { color: #07120e; background: #70e0b6; }
 button:disabled { opacity: .42; }
 .secondary { color: #e6edf8; background: #26344b; }
 .status-card { margin-top: 14px; padding: 16px; }
-.status-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: #c7d1e2; }
+.status-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: 14px; color: #c7d1e2; }
 progress { width: 100%; height: 9px; margin-top: 12px; accent-color: #70e0b6; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 14px 0 0; }
 .metrics div { background: #101827; border-radius: 10px; padding: 10px; }

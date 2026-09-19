@@ -23,11 +23,20 @@
         <p>与 Mac 版同一套识别规则：豆包、即梦、千问、清言、元宝、文心、小红书。支持一次选多张、逐张处理、打包下载，全部在手机浏览器内完成。</p>
       </header>
 
+      <section class="card status-card" aria-live="polite">
+        <div class="status-row">
+          <span id="status">等待选择图片</span>
+          <span id="progress-label"></span>
+        </div>
+        <progress id="progress" max="1" value="0"></progress>
+        <dl id="metrics" class="metrics"></dl>
+      </section>
+
       <section class="card controls">
         <label class="picker" for="file-input">
           <span class="picker-icon" aria-hidden="true">＋</span>
           <span class="picker-title">点这里选择图片</span>
-          <span class="picker-hint">可一次多选 · JPG / PNG / WebP / HEIC</span>
+          <span class="picker-hint">可多选 · JPG / PNG / WebP / HEIC</span>
         </label>
         <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <fieldset class="model-picker">
@@ -53,15 +62,6 @@
         <button id="save-all" class="secondary" type="button" hidden>打包下载（ZIP）</button>
         <button id="stop" class="secondary" type="button" hidden>停止</button>
         <button id="clear" class="secondary" type="button" hidden>清空列表</button>
-      </section>
-
-      <section class="card status-card" aria-live="polite">
-        <div class="status-row">
-          <span id="status">等待选择图片</span>
-          <span id="progress-label"></span>
-        </div>
-        <progress id="progress" max="1" value="0"></progress>
-        <dl id="metrics" class="metrics"></dl>
       </section>
 
       <section class="card queue-card" id="queue-card" hidden>
