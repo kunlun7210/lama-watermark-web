@@ -37,6 +37,7 @@ const MODELS = {
     manifest: 'models/int8/manifest.json',
     inputLayout: 'masked-rgb-mask',
     sha256: 'cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe',
+    hf: 'https://huggingface.co/g-ronimo/lama/resolve/418036c6b541e526cdbb0bead1ec3a87dabede53/lama_512_int8.onnx',
   },
   fp32: {
     id: 'fp32',
@@ -44,6 +45,7 @@ const MODELS = {
     manifest: 'models/fp32/manifest.json',
     inputLayout: 'image-mask',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
+    hf: 'https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx',
   },
 }
 const elements = {
@@ -139,6 +141,10 @@ function setMetrics(values) {
  * 4 张全部死于进度条取值），所以任一元素找不到就静默跳过——进度显示永远
  * 不允许影响处理流程本身。
  */
+/** ORT WASM 内存溢出（iPhone 13 等小内存机型在会话创建/推理时可能触发） */
+function isOutOfMemory(error) {
+  return /Out of memory|RangeError|no available backend/i.test(String(error?.message || error))
+}
 function setDownloadBar(visible, text, ratio = null, detail = '') {
   const bar = elements.downloadBar || document.querySelector('#download-bar')
   if (!bar) return
@@ -196,12 +202,15 @@ function preferOrigin() {
   return new URLSearchParams(location.search).get('source') === 'origin'
 }
 
-/** 默认 jsDelivr（国内通常更快），同源（GitHub Pages）备用；`?source=origin` 可强制同源优先 */
-function chunkSources(chunkUrl, relativePath) {
+/** 三个源，默认顺序：jsDelivr（国内快）→ HuggingFace（模型原始出处，Cloudflare CDN）→ 同源（GitHub Pages）。
+ *  rangeOffset：该源的 Range 起点参考系。镜像/同源的分段文件内偏移从 0 计；
+ *  HF 是整个 onnx 文件，需用该段在整文件中的偏移（loaded），闭区间保证不下过头。 */
+function chunkSources(chunkUrl, relativePath, model, fileOffset) {
   const list = [
-    { label: 'jsDelivr', url: mirrorUrl(relativePath) },
-    { label: '同源', url: chunkUrl },
-  ]
+    { label: 'jsDelivr', url: mirrorUrl(relativePath), rangeOffset: 0 },
+    { label: 'HuggingFace', url: model.hf, rangeOffset: fileOffset },
+    { label: '同源', url: chunkUrl, rangeOffset: 0 },
+  ].filter(source => !!source.url)
   if (preferOrigin()) list.reverse()
   return orderSources(list)
 }
@@ -278,6 +287,7 @@ async function writeCachedChunk(cache, cacheKey, bytes) {
 /**
  * 单段下载：断线/超时后带退避重试，并用 Range 从已下载位置续传。
  * 手机上网络抖动很常见，整段重来在 0.2MB/s 的链路上代价太大 —— 所以进度必须留在重试循环之外。
+ * 源分两类：镜像/同源的分段文件内偏移从 0 计；HuggingFace 是整文件，rangeOffset 为该段在整文件中的偏移。
  */
 async function downloadChunk(chunk, sources, onProgress) {
   let lastError = null
@@ -285,6 +295,7 @@ async function downloadChunk(chunk, sources, onProgress) {
   let have = 0
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
     const source = sources[sourceIndex]
+    const rangeOffset = source.rangeOffset || 0
     for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
       const controller = new AbortController()
       let idle
@@ -294,11 +305,17 @@ async function downloadChunk(chunk, sources, onProgress) {
       }
       try {
         armIdle()
-        const headers = have > 0 ? { Range: `bytes=${have}-` } : undefined
-        const response = await fetch(source.url, { headers, cache: 'no-store', signal: controller.signal })
+        // 统一闭区间：镜像/同源 rangeOffset=0；HF 用整文件偏移，闭区间保证不会下过头
+        const rangeStart = rangeOffset + have
+        const rangeEnd = rangeOffset + chunk.size - 1
+        const response = await fetch(source.url, {
+          headers: { Range: `bytes=${rangeStart}-${rangeEnd}` },
+          cache: 'no-store',
+          signal: controller.signal,
+        })
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-        // 服务端不支持断点续传时只能重来
-        if (have > 0 && response.status !== 206) { have = 0; received = [] }
+        // 只接受 206：HF 返回 200 意味着整文件开始下发（198MB），必须立刻中止换源
+        if (response.status !== 206) throw new Error(`该源不支持断点续传（HTTP ${response.status}）`)
         const reader = response.body.getReader()
         while (true) {
           const { done, value } = await reader.read()
@@ -360,7 +377,7 @@ async function fetchModel(model) {
         continue
       }
 
-      const sources = chunkSources(chunkUrl, relativePath)
+      const sources = chunkSources(chunkUrl, relativePath, model, loaded)
       const started = performance.now()
       const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
         currentSource = label
@@ -941,8 +958,10 @@ async function runBatch(items) {
   const started = performance.now()
   let index = 0
   let failed = 0
+  let oomDowngrades = 0
   try {
-    for (const item of items) {
+    for (let loopIndex = 0; loopIndex < items.length; loopIndex++) {
+      const item = items[loopIndex]
       if (state.stopRequested) break
       index++
       const fraction = (index - 1) / items.length
@@ -952,10 +971,25 @@ async function runBatch(items) {
         item.progressText = ''
       } catch (error) {
         console.error(error)
-        item.status = 'failed'
-        item.error = friendlyError(item, error)
-        failed++
-        if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
+        // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
+        // 自适应降线程重试当前这张：4 → 2 → 1，1 线程仍失败才算真失败。
+        if (isOutOfMemory(error) && ort.env.wasm.numThreads > 1 && oomDowngrades < 2) {
+          oomDowngrades++
+          const next = Math.max(1, Math.floor(ort.env.wasm.numThreads / 2))
+          ort.env.wasm.numThreads = next
+          await releaseActiveSession()
+          item.status = 'pending'
+          item.error = null
+          item.progressText = `内存不足，已自动降为 ${next} 线程，重试这张`
+          loopIndex-- // 重试当前张（抵消循环自增）
+        } else {
+          item.status = 'failed'
+          item.error = isOutOfMemory(error)
+            ? '设备内存不足：已自动降低线程仍失败。建议切换 INT8 模型（内存占用小得多），或关闭其他 Safari 标签页后再试'
+            : friendlyError(item, error)
+          failed++
+          if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
+        }
       }
       renderQueue()
       setMetrics(item.metrics || baseMetrics())

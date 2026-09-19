@@ -59,9 +59,26 @@ button { color: #07120e; background: #70e0b6; }
 button:disabled { opacity: .42; }
 .secondary { color: #e6edf8; background: #26344b; }
 .status-card { margin-top: 14px; padding: 16px; }
-.download-card { margin-top: 14px; padding: 14px 16px; border-color: #70e0b6; }
+.download-card { margin-top: 14px; padding: 11px 14px; border-color: #2f6e58; border-radius: 14px; }
+.download-card .status-row { font-size: 13.5px; }
+.download-card progress { margin-top: 8px; height: 6px; }
 .status-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: 14px; color: #c7d1e2; }
-progress { width: 100%; height: 9px; margin-top: 12px; accent-color: #70e0b6; }
+/* progress 在旧 iOS 上有系统默认外观，height/accent-color 可能不生效（iPhone 13 实测框会变大变突兀）。
+   显式自绘进度条，跨 iOS 版本渲染一致 */
+progress {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  margin: 12px 0 0;
+  border: 0;
+  border-radius: 999px;
+  background: #1c2940;
+  overflow: hidden;
+}
+progress::-webkit-progress-bar { background: #1c2940; border-radius: 999px; }
+progress::-webkit-progress-value { background: #70e0b6; border-radius: 999px; }
+progress::-moz-progress-bar { background: #70e0b6; border-radius: 999px; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 14px 0 0; }
 .metrics div { background: #101827; border-radius: 10px; padding: 10px; }
 .metrics dt { color: #8f9bb0; font-size: 12px; }
