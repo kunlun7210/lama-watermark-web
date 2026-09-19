@@ -20,7 +20,7 @@
       <header>
         <span class="eyebrow">本机浏览器推理 · 图片不会上传</span>
         <h1>LaMa 去水印 · iPhone 版</h1>
-        <p>与 Mac 版同一套识别规则：豆包、即梦、千问、清言、元宝、文心、小红书。全部在手机浏览器内推理，图片不上传。</p>
+        <p>与 Mac 版同一套识别规则：豆包、即梦、千问、清言、元宝、文心、小红书。支持一次选多张、逐张处理、打包下载，全部在手机浏览器内完成。</p>
       </header>
 
       <section class="card controls">
@@ -36,14 +36,19 @@
           </label>
         </fieldset>
         <label class="picker" for="file-input">
-          <strong>选择一张带水印的图片</strong>
-          <span>支持 JPG、PNG、WebP、HEIC；识别不到的水印会保持原图</span>
+          <strong>选择一张或多张带水印的图片</strong>
+          <span>支持 JPG、PNG、WebP、HEIC；可一次多选，识别不到的水印会保持原图</span>
         </label>
-        <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
+        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <p id="selected-name" class="selected-name" hidden></p>
-        <button id="run" type="button" disabled>加载所选模型并处理</button>
-        <button id="share" class="secondary" type="button" hidden>分享或保存结果</button>
-        <a id="download" class="secondary link-button" hidden>下载 PNG</a>
+        <button id="run-batch" type="button" disabled>开始批量处理</button>
+        <button id="run" class="secondary" type="button" disabled>只处理当前这张</button>
+        <button id="stop" class="secondary" type="button" hidden>停止</button>
+        <button id="save-all" type="button" hidden>保存全部（ZIP）</button>
+        <button id="share-all" class="secondary" type="button" hidden>分享打包文件</button>
+        <button id="clear" class="secondary" type="button" hidden>清空列表</button>
+        <button id="share" class="secondary" type="button" hidden>分享或保存当前结果</button>
+        <a id="download" class="secondary link-button" hidden>下载当前 PNG</a>
       </section>
 
       <section class="card status-card" aria-live="polite">
@@ -53,6 +58,14 @@
         </div>
         <progress id="progress" max="1" value="0"></progress>
         <dl id="metrics" class="metrics"></dl>
+      </section>
+
+      <section class="card queue-card" id="queue-card" hidden>
+        <div class="queue-head">
+          <strong>处理列表</strong>
+          <span id="queue-summary"></span>
+        </div>
+        <ul id="queue" class="queue"></ul>
       </section>
 
       <section class="preview-grid">
@@ -66,7 +79,7 @@
         </figure>
       </section>
 
-      <p class="footnote">与 Mac 版共用同一套规则：豆包、即梦（左上+右下双水印）、千问、清言、元宝、文心、小红书；识别不到时保持原图，不会猜测位置。首次打开会自动刷新一次以启用四线程。Gemini 专用还原暂未移植。</p>
+      <p class="footnote">与 Mac 版共用同一套规则：豆包、即梦（左上+右下双水印）、千问、清言、元宝、文心、小红书；识别不到时保持原图，不会猜测位置。首次打开会自动刷新一次以启用四线程。批量处理严格逐张执行、不并发，避免手机内存不足；ZIP 里一张都不会少——处理过的命名成「去水印-」，未识别的以「原图-」放入。Gemini 专用还原暂未移植。</p>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>
