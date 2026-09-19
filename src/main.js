@@ -116,14 +116,25 @@ function setMetrics(values) {
   }))
 }
 
-/** 下载进度条：固定在第一屏（header 下方），只在模型准备阶段出现 */
+/**
+ * 下载进度条：固定在第一屏（header 下方），只在模型准备阶段出现。
+ * 防御：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失（Safari 上实测发生过，
+ * 4 张全部死于进度条取值），所以任一元素找不到就静默跳过——进度显示永远
+ * 不允许影响处理流程本身。
+ */
 function setDownloadBar(visible, text, ratio = null, detail = '') {
-  elements.downloadBar.hidden = !visible
+  const bar = elements.downloadBar || document.querySelector('#download-bar')
+  if (!bar) return
+  const status = elements.downloadStatus || bar.querySelector('#download-status')
+  const progress = elements.downloadProgress || bar.querySelector('#download-progress')
+  const label = elements.downloadLabel || bar.querySelector('#download-label')
+  if (!status || !progress) return
+  bar.hidden = !visible
   if (!visible) return
-  elements.downloadStatus.textContent = text
-  elements.downloadLabel.textContent = detail
-  if (ratio === null) elements.downloadBarProgress.removeAttribute('value')
-  else elements.downloadBarProgress.value = Math.max(0, Math.min(1, ratio))
+  status.textContent = text
+  label.textContent = detail
+  if (ratio === null) progress.removeAttribute('value')
+  else progress.value = Math.max(0, Math.min(1, ratio))
 }
 
 function baseMetrics() {
