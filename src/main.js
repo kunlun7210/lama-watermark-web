@@ -10,9 +10,25 @@ const IMAGE_STORE = 'images'
 const RESTORE_LIMIT_BYTES = 200 * 1024 * 1024
 const RESTORE_LIMIT_COUNT = 40
 const INFER_TIMEOUT_MS = 120000
+const MODEL_CACHE_NAME = 'lama-model-v1'
+const CHUNK_RETRIES = 4
+// 备用镜像：GitHub 仓库经 jsDelivr CDN 分发，国内通常比 github.io 快
+const MIRROR_REPO = 'kunlun7210/lama-watermark-web@main'
 const MODELS = {
-  int8: { id: 'int8', label: 'INT8 62MB', manifest: 'models/int8/manifest.json', inputLayout: 'masked-rgb-mask' },
-  fp32: { id: 'fp32', label: 'FP32 198MB', manifest: 'models/fp32/manifest.json', inputLayout: 'image-mask' },
+  int8: {
+    id: 'int8',
+    label: 'INT8 62MB',
+    manifest: 'models/int8/manifest.json',
+    inputLayout: 'masked-rgb-mask',
+    sha256: 'cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe',
+  },
+  fp32: {
+    id: 'fp32',
+    label: 'FP32 198MB',
+    manifest: 'models/fp32/manifest.json',
+    inputLayout: 'image-mask',
+    sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
+  },
 }
 const elements = {
   file: document.querySelector('#file-input'),
@@ -100,6 +116,7 @@ function baseMetrics() {
   return {
     图片: item?.width ? `${item.width} × ${item.height}` : '未选择',
     模型: selectedModel().label,
+    模型缓存: cacheMetricText,
     线程: String(ort.env.wasm.numThreads),
     隔离模式: crossOriginIsolated ? '是' : '否',
   }
@@ -107,51 +124,268 @@ function baseMetrics() {
 
 /* ---------------- 模型会话 ---------------- */
 
-function progressDetail(loaded, total, index, chunkCount, started) {
+function progressDetail(loaded, total, index, chunkCount, started, sourceLabel) {
   const elapsed = Math.max((performance.now() - started) / 1000, 0.1)
   const mbps = loaded / 1048576 / elapsed
   const remaining = mbps > 0 ? (total - loaded) / 1048576 / mbps : 0
   const eta = remaining >= 60 ? `${Math.ceil(remaining / 60)} 分钟` : `${Math.max(1, Math.ceil(remaining))} 秒`
-  return `分段 ${index}/${chunkCount} · ${(loaded / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB · ${mbps.toFixed(1)} MB/s · 约剩 ${eta}`
+  const source = sourceLabel ? ` · 源 ${sourceLabel}` : ''
+  return `分段 ${index}/${chunkCount} · ${(loaded / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB · ${mbps.toFixed(1)} MB/s · 约剩 ${eta}${source}`
+}
+
+/** 同源（GitHub Pages）与 jsDelivr 镜像；两者都支持 Range，可续传 */
+function mirrorUrl(relativePath) {
+  return `https://cdn.jsdelivr.net/gh/${MIRROR_REPO}/public/${relativePath.replace(/^\.?\//, '')}`
+}
+
+/**
+ * 清单里的 chunk.file 只有文件名（相对清单所在目录），拼镜像路径时要补回目录，
+ * 否则 jsDelivr 上会 404。
+ */
+function chunkRelativePath(model, chunk) {
+  if (chunk.file.includes('/')) return chunk.file.replace(/^\.?\//, '')
+  const manifest = model.manifest
+  const slash = manifest.lastIndexOf('/')
+  const dir = slash >= 0 ? manifest.slice(0, slash + 1) : ''
+  return (dir + chunk.file).replace(/^\.?\//, '')
+}
+
+function preferMirror() {
+  return new URLSearchParams(location.search).get('source') === 'mirror'
+}
+
+function chunkSources(chunkUrl, relativePath) {
+  const list = [
+    { label: '同源', url: chunkUrl },
+    { label: 'jsDelivr', url: mirrorUrl(relativePath) },
+  ]
+  if (preferMirror()) list.reverse()
+  return orderSources(list)
+}
+
+/** 记住本次会话里真正下得动的源，后面几段直接用它，不再逐段浪费重试 */
+function orderSources(list) {
+  if (!preferredSourceLabel) return list
+  const hit = list.find(source => source.label === preferredSourceLabel)
+  if (!hit || list[0] === hit) return list
+  return [hit, ...list.filter(source => source !== hit)]
+}
+
+/** 清单本身也要有备用源：GitHub Pages 在部分网络下会直接连不上 */
+async function fetchManifest(model) {
+  const sameOrigin = new URL(model.manifest, assetBase).href
+  const order = preferMirror()
+    ? [mirrorUrl(model.manifest), sameOrigin]
+    : [sameOrigin, mirrorUrl(model.manifest)]
+  let lastError = null
+  for (const url of order) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetch(url, { cache: 'no-cache' })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return await response.json()
+      } catch (error) {
+        lastError = error
+        await new Promise(resolve => setTimeout(resolve, 600))
+      }
+    }
+  }
+  throw new Error(`模型清单读取失败：${lastError?.message || '网络错误'}`)
+}
+
+async function openModelCache() {
+  if (typeof caches === 'undefined') return null
+  try { return await caches.open(MODEL_CACHE_NAME) } catch { return null }
+}
+
+/** 取一段：先查持久缓存，命中就直接用（重开页面不再下载） */
+async function readCachedChunk(cache, chunk) {
+  if (!cache) return null
+  try {
+    const keys = await cache.keys()
+    for (const request of keys) {
+      if (request.url.endsWith(chunk.file)) {
+        const response = await cache.match(request)
+        if (!response) continue
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (bytes.byteLength === chunk.size) return bytes
+        await cache.delete(request)
+      }
+    }
+  } catch (error) { console.warn('读取模型缓存失败', error) }
+  return null
+}
+
+async function writeCachedChunk(cache, url, bytes) {
+  if (!cache) return
+  try {
+    await cache.put(url, new Response(new Blob([bytes]), {
+      headers: { 'content-type': 'application/octet-stream', 'content-length': String(bytes.byteLength) },
+    }))
+  } catch (error) { console.warn('写入模型缓存失败', error) }
+}
+
+/**
+ * 单段下载：断线/超时后带退避重试，并用 Range 从已下载位置续传。
+ * 手机上网络抖动很常见，整段重来在 0.2MB/s 的链路上代价太大 —— 所以进度必须留在重试循环之外。
+ */
+async function downloadChunk(chunk, sources, onProgress) {
+  let lastError = null
+  let received = []
+  let have = 0
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+    const source = sources[sourceIndex]
+    for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
+      const controller = new AbortController()
+      let idle
+      const armIdle = () => {
+        clearTimeout(idle)
+        idle = setTimeout(() => controller.abort(), 45000)
+      }
+      try {
+        armIdle()
+        const headers = have > 0 ? { Range: `bytes=${have}-` } : undefined
+        const response = await fetch(source.url, { headers, cache: 'no-store', signal: controller.signal })
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
+        // 服务端不支持断点续传时只能重来
+        if (have > 0 && response.status !== 206) { have = 0; received = [] }
+        const reader = response.body.getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          armIdle()
+          received.push(value)
+          have += value.byteLength
+          onProgress(have, chunk.size, source.label)
+          if (have >= chunk.size) break
+        }
+        clearTimeout(idle)
+        if (have !== chunk.size) throw new Error(`分段不完整（${have}/${chunk.size} 字节）`)
+        const bytes = new Uint8Array(chunk.size)
+        let offset = 0
+        for (const part of received) { bytes.set(part, offset); offset += part.byteLength }
+        return { bytes, source, resumed: received.length > 1 || have > chunk.size }
+      } catch (error) {
+        clearTimeout(idle)
+        lastError = error.name === 'AbortError' ? new Error('网络空闲超过 45 秒') : error
+        console.info(`第 ${attempt + 1} 次尝试失败（已收到 ${(have / 1048576).toFixed(1)}MB，下次从该位置续传）：${lastError.message}`)
+        if (have >= chunk.size) break
+        await new Promise(resolve => setTimeout(resolve, Math.min(8000, 800 * (attempt + 1))))
+      }
+    }
+    if (sourceIndex + 1 < sources.length) {
+      console.info(`换用备用源：${sources[sourceIndex + 1].label}（已下载 ${(have / 1048576).toFixed(1)}MB 保留）`)
+    }
+  }
+  throw lastError || new Error('模型分段下载失败')
 }
 
 async function fetchModel(model) {
   const manifestUrl = new URL(model.manifest, assetBase).href
-  setStatus(`正在连接 ${model.label}`, 0, '首次下载后浏览器通常会缓存')
-  const manifestResponse = await fetch(manifestUrl, { cache: 'no-cache' })
-  if (!manifestResponse.ok) throw new Error(`模型清单读取失败：HTTP ${manifestResponse.status}`)
-  const manifest = await manifestResponse.json()
+  const manifest = await fetchManifest(model)
   if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
 
+  const cache = await openModelCache()
   const bytes = new Uint8Array(manifest.totalSize)
   let loaded = 0
-  const started = performance.now()
+  let cachedCount = 0
+  let currentSource = ''
+  let switchedSource = false
+
   for (let index = 0; index < manifest.chunks.length; index++) {
     const chunk = manifest.chunks[index]
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 180000)
-    let partLoaded = 0
-    try {
-      const url = new URL(chunk.file, manifestUrl).href
-      const response = await fetch(url, { cache: 'force-cache', signal: controller.signal })
-      if (!response.ok || !response.body) throw new Error(`模型分段 ${index + 1} 下载失败：HTTP ${response.status}`)
-      const reader = response.body.getReader()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (loaded + value.byteLength > bytes.byteLength) throw new Error('模型数据超过清单大小')
-        bytes.set(value, loaded)
-        loaded += value.byteLength
-        partLoaded += value.byteLength
-        setStatus('正在下载 LaMa 模型', loaded / manifest.totalSize, progressDetail(loaded, manifest.totalSize, index + 1, manifest.chunks.length, started))
-      }
-    } finally {
-      clearTimeout(timeout)
+    const chunkUrl = new URL(chunk.file, manifestUrl).href
+    const relativePath = chunkRelativePath(model, chunk)
+
+    const cached = await readCachedChunk(cache, chunk)
+    if (cached) {
+      bytes.set(cached, loaded)
+      loaded += cached.byteLength
+      cachedCount++
+      setStatus('正在读取已缓存的模型', loaded / manifest.totalSize,
+        `第 ${cachedCount} 段来自本机缓存 · ${(loaded / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`)
+      continue
     }
-    if (partLoaded !== chunk.size) throw new Error(`模型分段 ${index + 1} 大小不符`)
+
+    const sources = chunkSources(chunkUrl, relativePath)
+    const started = performance.now()
+    const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
+      currentSource = label
+      setStatus('正在下载 LaMa 模型', (loaded + have) / manifest.totalSize,
+        progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label))
+    })
+    bytes.set(chunkBytes.bytes, loaded)
+    loaded += chunkBytes.bytes.byteLength
+    currentSource = chunkBytes.source.label
+    preferredSourceLabel = chunkBytes.source.label
+    await writeCachedChunk(cache, chunkUrl, chunkBytes.bytes)
+
+    // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
+    const seconds = Math.max(0.1, (performance.now() - started) / 1000)
+    const speed = chunkBytes.bytes.byteLength / seconds
+    if (speed < SLOW_SOURCE_BYTES_PER_SECOND && !switchedSource) {
+      switchedSource = true
+      const other = sources.find(source => source.label !== chunkBytes.source.label)
+      if (other) {
+        preferredSourceLabel = other.label
+        console.info(`当前源 ${chunkBytes.source.label} 速度 ${(speed / 1024).toFixed(0)} KB/s，下一段改用 ${other.label}`)
+        setStatus('当前线路较慢，正在切换下载源', loaded / manifest.totalSize, `已下载 ${(loaded / 1048576).toFixed(0)} MB，换源重试`)
+      }
+    }
   }
+
   if (loaded !== manifest.totalSize) throw new Error('模型文件不完整')
+
+  const expectedSha = manifest.sha256 || model.sha256
+  if (expectedSha && crypto?.subtle) {
+    setStatus('正在校验模型完整性', 1, '只需一次')
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+    if (hex !== expectedSha) {
+      await clearModelCache(model)
+      throw new Error('模型校验未通过（下载过程中被截断），已清除缓存，请重新下载')
+    }
+  }
+  if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
+  void refreshCacheMetric()
   return bytes
+}
+
+async function clearModelCache() {
+  try {
+    if (typeof caches !== 'undefined') await caches.delete(MODEL_CACHE_NAME)
+  } catch (error) { console.warn('清除模型缓存失败', error) }
+}
+
+/** 已缓存多少段（用于在界面上告诉用户「这次不用再下载」） */
+async function modelCacheStatus(model) {
+  const cache = await openModelCache()
+  if (!cache) return { supported: false }
+  try {
+    const manifest = await fetchManifest(model)
+    let have = 0
+    for (const chunk of manifest.chunks) if (await readCachedChunk(cache, chunk)) have++
+    return { supported: true, have, total: manifest.chunks.length, bytes: manifest.totalSize }
+  } catch { return { supported: false } }
+}
+
+let cacheMetricText = '检查中'
+let preferredSourceLabel = null
+const SLOW_SOURCE_BYTES_PER_SECOND = 120 * 1024
+async function refreshCacheMetric() {
+  const model = selectedModel()
+  const status = await modelCacheStatus(model)
+  cacheMetricText = !status.supported
+    ? '不可用'
+    : status.have === status.total
+      ? '已缓存（无需下载）'
+      : status.have === 0
+        ? `未缓存 · 需下载 ${(status.bytes / 1048576).toFixed(0)}MB`
+        : `部分缓存 ${status.have}/${status.total}`
+  if (elements.metrics.querySelector('dt')) {
+    const dt = [...elements.metrics.querySelectorAll('dt')].find(node => node.textContent === '模型缓存')
+    if (dt?.nextElementSibling) dt.nextElementSibling.textContent = cacheMetricText
+  }
 }
 
 async function releaseActiveSession() {
@@ -811,6 +1045,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   setStatus('模型已切换', 0, '再次「开始批量处理」会用新模型重跑')
   setMetrics(baseMetrics())
   renderQueue()
+  void refreshCacheMetric()
 }))
 
 elements.runBatch.addEventListener('click', () => {
@@ -850,6 +1085,13 @@ async function restoreSelectedFiles() {
   } catch (error) { console.warn('无法恢复上次图片', error) }
 }
 
-setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
+setMetrics({ 模型: selectedModel().label, 模型缓存: cacheMetricText, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
+// 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天
+void navigator.storage?.persist?.().catch(() => {})
+void refreshCacheMetric().then(() => {
+  const status = cacheMetricText
+  if (status.startsWith('已缓存')) console.info('模型已在本地缓存，本次无需下载')
+  setMetrics({ 模型: selectedModel().label, 模型缓存: status, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
+})
 void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
 void restoreSelectedFiles()
