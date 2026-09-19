@@ -1099,6 +1099,21 @@ async function readSelectedFiles() {
   } finally { database.close() }
 }
 
+/** 删除持久化的图片列表（清空列表、恢复失败时调用），否则下次打开会再次恢复 */
+async function deleteStoredFiles() {
+  try {
+    const database = await openImageDatabase()
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(IMAGE_STORE, 'readwrite')
+      transaction.objectStore(IMAGE_STORE).delete('batch')
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error || new Error('清除图片缓存失败'))
+      transaction.onabort = () => reject(transaction.error || new Error('清除图片缓存中止'))
+    })
+    database.close()
+  } catch (error) { console.warn('清除图片缓存失败', error) }
+}
+
 async function addFiles(files, { restored = false } = {}) {
   const accepted = files.filter(file => file && file.size > 0)
   if (!accepted.length) return
@@ -1153,6 +1168,7 @@ elements.clear.addEventListener('click', () => {
   elements.selectedName.hidden = true
   elements.source.width = elements.source.height = 0
   elements.result.width = elements.result.height = 0
+  void deleteStoredFiles() // 清空列表同时清掉持久化缓存，否则下次打开还会恢复
   setStatus('等待选择图片', 0)
   setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
   renderQueue()
@@ -1176,12 +1192,7 @@ async function restoreSelectedFiles() {
     setStatus(`已恢复上次的 ${files.length} 张图片`, 0, '点「开始批量处理」继续')
   } catch (error) {
     console.warn('无法恢复上次图片', error)
-    try {
-      const database = await openImageDatabase()
-      const transaction = database.transaction(IMAGE_STORE, 'readwrite')
-      transaction.objectStore(IMAGE_STORE).delete('batch')
-      database.close()
-    } catch { /* 忽略 */ }
+    await deleteStoredFiles()
     setStatus('上次的图片缓存已失效，请重新选择图片', 0, '浏览器清理过本地数据，这是正常的')
   }
 }
