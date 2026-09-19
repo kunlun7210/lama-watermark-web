@@ -24,6 +24,12 @@
       </header>
 
       <section class="card controls">
+        <label class="picker" for="file-input">
+          <span class="picker-icon" aria-hidden="true">＋</span>
+          <span class="picker-title">点这里选择图片</span>
+          <span class="picker-hint">可一次多选 · JPG / PNG / WebP / HEIC</span>
+        </label>
+        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <fieldset class="model-picker">
           <legend>选择模型</legend>
           <label class="model-option">
@@ -35,11 +41,6 @@
             <span><strong>FP32 · 198MB</strong><small>更接近现有 Mac 版，用于画质基准</small></span>
           </label>
         </fieldset>
-        <label class="picker" for="file-input">
-          <strong>选择一张或多张带水印的图片</strong>
-          <span>支持 JPG、PNG、WebP、HEIC；可一次多选，识别不到的水印会保持原图</span>
-        </label>
-        <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <p id="selected-name" class="selected-name" hidden></p>
         <button id="run-batch" type="button" disabled>开始批量处理</button>
         <button id="save-album" type="button" hidden>存入相册</button>

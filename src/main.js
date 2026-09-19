@@ -10,7 +10,7 @@ const IMAGE_STORE = 'images'
 const RESTORE_LIMIT_BYTES = 200 * 1024 * 1024
 const RESTORE_LIMIT_COUNT = 40
 const INFER_TIMEOUT_MS = 120000
-const MODEL_CACHE_NAME = 'lama-model-v1'
+const MODEL_CACHE_NAME = 'lama-model-v2'
 const CHUNK_RETRIES = 4
 // 备用镜像：GitHub 仓库经 jsDelivr CDN 分发，国内通常比 github.io 快
 const MIRROR_REPO = 'kunlun7210/lama-watermark-web@main'
@@ -195,31 +195,39 @@ async function fetchManifest(model) {
 
 async function openModelCache() {
   if (typeof caches === 'undefined') return null
-  try { return await caches.open(MODEL_CACHE_NAME) } catch { return null }
+  try {
+    // v1 的缓存键与模型目录无关（INT8 / FP32 会互相污染），清掉一次即可（不存在时是空操作）
+    try { await caches.delete('lama-model-v1') } catch { /* 忽略 */ }
+    return await caches.open(MODEL_CACHE_NAME)
+  } catch { return null }
+}
+
+/**
+ * 缓存键：两个模型的分段文件名完全一样（都是 lama.part.000.bin），
+ * 所以键必须带目录，否则 INT8 与 FP32 会互相覆盖（表现为「模型校验未通过」）。
+ * 用一个固定合成 origin，既保证唯一，又与下载源（同源 / jsDelivr）无关。
+ */
+function chunkCacheKey(relativePath) {
+  return `https://lama-model.cache/${relativePath.replace(/^\.?\//, '')}`
 }
 
 /** 取一段：先查持久缓存，命中就直接用（重开页面不再下载） */
-async function readCachedChunk(cache, chunk) {
+async function readCachedChunk(cache, cacheKey, expectedSize) {
   if (!cache) return null
   try {
-    const keys = await cache.keys()
-    for (const request of keys) {
-      if (request.url.endsWith(chunk.file)) {
-        const response = await cache.match(request)
-        if (!response) continue
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        if (bytes.byteLength === chunk.size) return bytes
-        await cache.delete(request)
-      }
-    }
+    const response = await cache.match(cacheKey)
+    if (!response) return null
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength === expectedSize) return bytes
+    await cache.delete(cacheKey)
   } catch (error) { console.warn('读取模型缓存失败', error) }
   return null
 }
 
-async function writeCachedChunk(cache, url, bytes) {
+async function writeCachedChunk(cache, cacheKey, bytes) {
   if (!cache) return
   try {
-    await cache.put(url, new Response(new Blob([bytes]), {
+    await cache.put(cacheKey, new Response(new Blob([bytes]), {
       headers: { 'content-type': 'application/octet-stream', 'content-length': String(bytes.byteLength) },
     }))
   } catch (error) { console.warn('写入模型缓存失败', error) }
@@ -297,7 +305,7 @@ async function fetchModel(model) {
     const chunkUrl = new URL(chunk.file, manifestUrl).href
     const relativePath = chunkRelativePath(model, chunk)
 
-    const cached = await readCachedChunk(cache, chunk)
+    const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
     if (cached) {
       bytes.set(cached, loaded)
       loaded += cached.byteLength
@@ -318,7 +326,7 @@ async function fetchModel(model) {
     loaded += chunkBytes.bytes.byteLength
     currentSource = chunkBytes.source.label
     preferredSourceLabel = chunkBytes.source.label
-    await writeCachedChunk(cache, chunkUrl, chunkBytes.bytes)
+    await writeCachedChunk(cache, chunkCacheKey(relativePath), chunkBytes.bytes)
 
     // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
     const seconds = Math.max(0.1, (performance.now() - started) / 1000)
@@ -364,7 +372,9 @@ async function modelCacheStatus(model) {
   try {
     const manifest = await fetchManifest(model)
     let have = 0
-    for (const chunk of manifest.chunks) if (await readCachedChunk(cache, chunk)) have++
+    for (const chunk of manifest.chunks) {
+      if (await readCachedChunk(cache, chunkCacheKey(chunkRelativePath(model, chunk)), chunk.size)) have++
+    }
     return { supported: true, have, total: manifest.chunks.length, bytes: manifest.totalSize }
   } catch { return { supported: false } }
 }
@@ -450,6 +460,15 @@ async function decodeFile(file) {
       throw new Error('浏览器的图像解码器打不开这个文件；若它是 HEIC（有些文件名仍写成 .JPG），请先在相册里导出成 PNG/JPG')
     }
   }
+}
+
+/** 单张处理时的报错文案：区分「格式不支持」和「来自上次缓存、数据已失效」 */
+function friendlyError(item, error) {
+  const text = String(error?.message || error || '')
+  if (item.restored && /解码|打不开|decode|Load failed|TypeError/i.test(text)) {
+    return '这张图片来自上次缓存，数据已失效，请重新选择图片'
+  }
+  return text
 }
 
 function drawBitmap(canvas, bitmap) {
@@ -870,7 +889,7 @@ async function runBatch(items) {
       } catch (error) {
         console.error(error)
         item.status = 'failed'
-        item.error = error.message || String(error)
+        item.error = friendlyError(item, error)
         failed++
         if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
       }
@@ -1017,11 +1036,11 @@ async function readSelectedFiles() {
   } finally { database.close() }
 }
 
-async function addFiles(files) {
+async function addFiles(files, { restored = false } = {}) {
   const accepted = files.filter(file => file && file.size > 0)
   if (!accepted.length) return
   for (const file of accepted) {
-    const item = { id: state.nextId++, file, name: file.name, status: 'pending', thumbUrl: null, url: null, blob: null }
+    const item = { id: state.nextId++, file, name: file.name, restored, status: 'pending', thumbUrl: null, url: null, blob: null }
     state.items.push(item)
   }
   const latest = state.items[state.items.length - 1]
@@ -1080,9 +1099,28 @@ async function restoreSelectedFiles() {
   try {
     const files = await readSelectedFiles()
     if (!files.length) return
-    await addFiles(files)
+    // 上次缓存的文件可能已被系统清理成空壳：先试解码第一张，坏掉就整体丢弃，
+    // 免得列表里全是「解码失败」的死条目。
+    const probe = files[0]
+    if (!probe.size) throw new Error('缓存文件为空')
+    try {
+      const bitmap = await decodeFile(probe)
+      bitmap.close?.()
+    } catch {
+      throw new Error('缓存文件已损坏')
+    }
+    await addFiles(files, { restored: true })
     setStatus(`已恢复上次的 ${files.length} 张图片`, 0, '点「开始批量处理」继续')
-  } catch (error) { console.warn('无法恢复上次图片', error) }
+  } catch (error) {
+    console.warn('无法恢复上次图片', error)
+    try {
+      const database = await openImageDatabase()
+      const transaction = database.transaction(IMAGE_STORE, 'readwrite')
+      transaction.objectStore(IMAGE_STORE).delete('batch')
+      database.close()
+    } catch { /* 忽略 */ }
+    setStatus('上次的图片缓存已失效，请重新选择图片', 0, '浏览器清理过本地数据，这是正常的')
+  }
 }
 
 setMetrics({ 模型: selectedModel().label, 模型缓存: cacheMetricText, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })

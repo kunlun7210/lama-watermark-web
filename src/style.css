@@ -6,6 +6,8 @@
 }
 
 * { box-sizing: border-box; }
+/* 作者样式里的 display 会盖掉浏览器默认的 [hidden]{display:none}，必须显式补回来 */
+[hidden] { display: none !important; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 50% -20%, #223454 0, #080d16 48%); }
 .shell { width: min(980px, 100%); margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 16px max(32px, env(safe-area-inset-bottom)); }
 header { padding: 8px 4px 18px; }
@@ -21,9 +23,25 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 .model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
 .model-option span { display: grid; gap: 4px; }
 .model-option small { color: #99a6bb; line-height: 1.4; }
-.picker { display: grid; gap: 5px; padding: 18px; border: 1px dashed #52637f; border-radius: 14px; background: #101827; cursor: pointer; }
-.picker span { color: #99a6bb; font-size: 14px; }
-#file-input { width: 100%; font-size: 16px; }
+.picker {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "icon title" "icon hint";
+  align-items: center;
+  gap: 4px 14px;
+  padding: 18px;
+  border: 2px solid #70e0b6;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(112, 224, 182, .16) 0%, rgba(112, 224, 182, .06) 100%);
+  box-shadow: 0 0 0 4px rgba(112, 224, 182, .10);
+  cursor: pointer;
+}
+.picker:active { transform: scale(.995); }
+.picker-icon { grid-area: icon; width: 46px; height: 46px; border-radius: 50%; background: #70e0b6; color: #07120e; font-size: 30px; font-weight: 700; line-height: 1; display: grid; place-items: center; }
+.picker-title { grid-area: title; font-size: 18px; font-weight: 800; color: #a7f0d2; }
+.picker-hint { grid-area: hint; color: #b9c6d8; font-size: 13.5px; line-height: 1.45; }
+/* 原生文件框隐藏：只留上面那个醒目入口，标签点击依然能唤起系统选择器 */
+#file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .selected-name { margin: 0; color: #75d7b4; font-size: 14px; overflow-wrap: anywhere; }
 button, .link-button { width: 100%; min-height: 50px; border: 0; border-radius: 13px; font: inherit; font-weight: 750; text-align: center; display: grid; place-items: center; text-decoration: none; }
 button { color: #07120e; background: #70e0b6; }
