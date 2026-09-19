@@ -162,12 +162,17 @@ function setDownloadBar(visible, text, ratio = null, detail = '') {
 
 function baseMetrics() {
   const item = currentItem()
-  return {
+  const metrics = {
     图片: item?.width ? `${item.width} × ${item.height}` : '未选择',
     模型: selectedModel().label,
-    // 线程数同时反映跨源隔离是否生效（4 = 生效，1 = 退回单线程），不再单列「隔离模式」
-    线程: String(ort.env.wasm.numThreads),
   }
+  // 线程数同时反映跨源隔离是否生效（4 = 生效，1 = 退回单线程），不再单列「隔离模式」。
+  // 但只在已经选好图片后才显示：没选图时它只是个与用户操作无关的内部参数，
+  // 白占第一屏一格，还容易被当成一个能点的开关。
+  // 判据与上面「图片」那一栏严格同步 —— 图片栏显示尺寸才出现线程，视觉上不会自相矛盾。
+  // 注意：这里刻意不用 state.items.length，否则队列非空但当前项尚未解码时会不一致。
+  if (item?.width) metrics.线程 = String(ort.env.wasm.numThreads)
+  return metrics
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -1266,7 +1271,7 @@ elements.clear.addEventListener('click', async () => {
   elements.source.width = elements.source.height = 0
   elements.result.width = elements.result.height = 0
   setStatus('等待选择图片', 0)
-  setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
+  setMetrics(baseMetrics())
   renderQueue()
 })
 
@@ -1296,7 +1301,7 @@ async function restoreSelectedFiles() {
   }
 }
 
-setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
+setMetrics(baseMetrics())
 // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天
 void navigator.storage?.persist?.().catch(() => {})
 void refreshCacheTags()
