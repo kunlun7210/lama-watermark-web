@@ -34,11 +34,17 @@
           <legend>选择模型</legend>
           <label class="model-option">
             <input type="radio" name="model" value="int8" checked />
-            <span><strong>INT8 · 62MB</strong><small>下载和内存压力较小，画质接近 FP32</small></span>
+            <span>
+              <span class="model-line"><strong>INT8 · 62MB</strong><em id="cache-tag-int8" class="model-cache-tag">检查中</em></span>
+              <small>下载和内存压力较小，画质接近 FP32</small>
+            </span>
           </label>
           <label class="model-option">
             <input type="radio" name="model" value="fp32" />
-            <span><strong>FP32 · 198MB</strong><small>更接近现有 Mac 版，用于画质基准</small></span>
+            <span>
+              <span class="model-line"><strong>FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
+              <small>更接近现有 Mac 版，用于画质基准</small>
+            </span>
           </label>
         </fieldset>
         <p id="selected-name" class="selected-name" hidden></p>

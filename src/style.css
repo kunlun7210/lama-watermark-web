@@ -18,11 +18,20 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 .controls { padding: 16px; display: grid; gap: 12px; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 0; padding: 0; border: 0; }
 .model-picker legend { margin-bottom: 9px; color: #bac5d6; font-size: 14px; }
-.model-option { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
+.model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
 .model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
-.model-option span { display: grid; gap: 4px; }
+.model-option > span { display: grid; gap: 4px; }
 .model-option small { color: #99a6bb; line-height: 1.4; }
+/* 型号名与缓存状态必须同一行（手机屏幕窄，多一行就挤）。
+   注意权重：.model-option span 是 (0,1,1)，必须用更高权重的选择器覆盖它 */
+.model-option > span > .model-line { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; }
+.model-line strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-cache-tag { flex: 0 0 auto; font-style: normal; font-size: 11.5px; line-height: 1.7; padding: 0 7px; border-radius: 999px; border: 1px solid #3a4a63; color: #93a1b5; white-space: nowrap; }
+.model-cache-tag.cached { color: #06201a; background: #70e0b6; border-color: #70e0b6; font-weight: 700; }
+.model-cache-tag.missing { color: #9aa7bb; }
+.model-cache-tag.partial { color: #ffce85; border-color: #6d5730; }
+.model-cache-tag.checking { opacity: .6; }
 .picker {
   display: grid;
   grid-template-columns: auto 1fr;

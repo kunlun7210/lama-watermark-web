@@ -47,6 +47,7 @@ const elements = {
   queueCard: document.querySelector('#queue-card'),
   queue: document.querySelector('#queue'),
   queueSummary: document.querySelector('#queue-summary'),
+  cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
 }
 
@@ -116,9 +117,8 @@ function baseMetrics() {
   return {
     图片: item?.width ? `${item.width} × ${item.height}` : '未选择',
     模型: selectedModel().label,
-    模型缓存: cacheMetricText,
+    // 线程数同时反映跨源隔离是否生效（4 = 生效，1 = 退回单线程），不再单列「隔离模式」
     线程: String(ort.env.wasm.numThreads),
-    隔离模式: crossOriginIsolated ? '是' : '否',
   }
 }
 
@@ -355,7 +355,7 @@ async function fetchModel(model) {
     }
   }
   if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
-  void refreshCacheMetric()
+  void refreshCacheTags()
   return bytes
 }
 
@@ -379,23 +379,31 @@ async function modelCacheStatus(model) {
   } catch { return { supported: false } }
 }
 
-let cacheMetricText = '检查中'
 let preferredSourceLabel = null
 const SLOW_SOURCE_BYTES_PER_SECOND = 120 * 1024
-async function refreshCacheMetric() {
-  const model = selectedModel()
-  const status = await modelCacheStatus(model)
-  cacheMetricText = !status.supported
-    ? '不可用'
-    : status.have === status.total
-      ? '已缓存（无需下载）'
-      : status.have === 0
-        ? `未缓存 · 需下载 ${(status.bytes / 1048576).toFixed(0)}MB`
-        : `部分缓存 ${status.have}/${status.total}`
-  if (elements.metrics.querySelector('dt')) {
-    const dt = [...elements.metrics.querySelectorAll('dt')].find(node => node.textContent === '模型缓存')
-    if (dt?.nextElementSibling) dt.nextElementSibling.textContent = cacheMetricText
-  }
+
+/** 把每个模型的缓存状态直接标在模型名后面（不再单独占一行指标） */
+async function refreshCacheTags() {
+  await Promise.all(Object.values(MODELS).map(async model => {
+    const tag = elements.cacheTags[model.id]
+    if (!tag) return
+    const status = await modelCacheStatus(model)
+    if (!status.supported) {
+      tag.hidden = true
+      return
+    }
+    tag.hidden = false
+    if (status.have === status.total) {
+      tag.textContent = '已缓存'
+      tag.className = 'model-cache-tag cached'
+    } else if (status.have === 0) {
+      tag.textContent = '未缓存'
+      tag.className = 'model-cache-tag missing'
+    } else {
+      tag.textContent = `${status.have}/${status.total} 段`
+      tag.className = 'model-cache-tag partial'
+    }
+  }))
 }
 
 async function releaseActiveSession() {
@@ -1064,7 +1072,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   setStatus('模型已切换', 0, '再次「开始批量处理」会用新模型重跑')
   setMetrics(baseMetrics())
   renderQueue()
-  void refreshCacheMetric()
+  void refreshCacheTags()
 }))
 
 elements.runBatch.addEventListener('click', () => {
@@ -1091,7 +1099,7 @@ elements.clear.addEventListener('click', () => {
   elements.source.width = elements.source.height = 0
   elements.result.width = elements.result.height = 0
   setStatus('等待选择图片', 0)
-  setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
+  setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
   renderQueue()
 })
 
@@ -1123,13 +1131,9 @@ async function restoreSelectedFiles() {
   }
 }
 
-setMetrics({ 模型: selectedModel().label, 模型缓存: cacheMetricText, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
+setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads) })
 // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天
 void navigator.storage?.persist?.().catch(() => {})
-void refreshCacheMetric().then(() => {
-  const status = cacheMetricText
-  if (status.startsWith('已缓存')) console.info('模型已在本地缓存，本次无需下载')
-  setMetrics({ 模型: selectedModel().label, 模型缓存: status, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
-})
+void refreshCacheTags()
 void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
 void restoreSelectedFiles()
