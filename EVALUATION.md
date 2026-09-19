@@ -215,5 +215,25 @@ analysis = { width, height, rgba, gray, regions }   // rgba 18MB + float32 灰�
 
 验证（stub 掉 `navigator.share` 记录入参）：4 张结果一次交出，文件名/类型/大小正确（PNG 源 → `.png`，JPEG 源 → `.jpg`）；单张「存图」交出 1 个文件。
 
+## 2026-09-19 弱网下载：户外 5G 实测 0.2 MB/s 且失败
+
+用户把手机拿到室外（5G）实测：模型下载只有 0.2 MB/s、中途失败，且**每次打开页面都重新下载 62MB**。三条改造，均已实测：
+
+| 改造 | 实现 | 验证方式与结果 |
+| --- | --- | --- |
+| 只下载一次 | 分段完成即写入 Cache Storage；读到缓存就跳过网络 | 同一 profile 重开页面：**模型网络请求 0 次**，直接完成处理 |
+| 断线续传 | 部分缓冲移出重试循环，重试带 `Range: bytes=<have>-`；空闲看门狗每次读取都重新计时 | CDP `Fetch.fulfillRequest` 只回 1MB 后掐断 → 第二次请求头为 `Range: bytes=1048576-`，续传成功 |
+| 自动换源 | 清单与分段都备 jsDelivr 镜像；记住可用源，后续分段优先使用；慢于 120 KB/s 切换一次 | `Network.setBlockedURLs` 拉黑同源 → 自动切 jsDelivr，实测 27–33 MB/s 完成其余分段，SHA 校验通过 |
+
+另外补了 **SHA-256 完整性校验**（取清单里的 `sha256`）：校验不过就清缓存并明确报错，避免拿着被截断的模型继续跑。
+
+### 两个实现 bug（都是自己写出来的，靠测试才暴露）
+
+1. **续传进度被放在重试循环内部**：`received` / `have` 声明在 `for attempt` 里，每次重试都归零 → 永远带不上 Range。第一次测试时看到第二次请求"无 Range"才发现。
+2. **镜像路径丢了目录**：清单里 `chunk.file` 只有文件名（`lama.part.000.bin`），拼 jsDelivr 路径时漏了 `models/int8/`，导致换源时 404 —— 表现为"换源了但还是失败"，错误信息要读到队列行的失败原因才看见。
+
+教训：**超时/重试/续传这类逻辑，一定要构造真实故障来测**（CDP 的 `Fetch.fulfillRequest` 截断、`Network.setBlockedURLs` 拉黑都比"看代码觉得对"可靠）。
+
+
 
 
