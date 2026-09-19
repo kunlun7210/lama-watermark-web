@@ -65,6 +65,20 @@ ort.env.logLevel = 'warning'
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
 
+/**
+ * 让界面有机会先画出状态文字，再去做会阻塞主线程的推理。
+ * 注意：隐藏标签页里 requestAnimationFrame 永不触发，必须用定时器兜底，
+ * 否则整个批量流程会静默停在这一步（线上实测踩过）。
+ */
+function yieldToUi() {
+  return new Promise(resolve => {
+    let settled = false
+    const done = () => { if (!settled) { settled = true; resolve() } }
+    requestAnimationFrame(() => requestAnimationFrame(done))
+    setTimeout(done, 150)
+  })
+}
+
 function setStatus(text, ratio = null, detail = '') {
   elements.status.textContent = text
   elements.progressLabel.textContent = detail
@@ -555,7 +569,7 @@ async function processItem(item) {
       item.progressText = `正在修复 ${index + 1}/${regions.length} · ${region.provider}`
       renderQueue()
       setStatus(`${item.name} · 第 ${index + 1}/${regions.length} 处 · ${region.provider}`, null, '页面短暂无响应属于正常现象')
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      await yieldToUi()
       const window_ = regionWindow(region, item.width, item.height)
       const maskInWindow = regionMaskInWindow(region, window_)
       const { image, mask } = buildInputs(targetContext.canvas, window_, maskInWindow)
