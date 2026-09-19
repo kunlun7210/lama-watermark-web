@@ -188,7 +188,7 @@ function readImageData(canvas) {
   return imageData
 }
 
-/** 分析图片：调用规则引擎给出待修复区域 */
+/** 分析图片：调用规则引擎给出待修复区域（大数组用完即弃，不跨张留存） */
 async function analyzeImage() {
   const width = elements.source.width
   const height = elements.source.height
@@ -198,9 +198,29 @@ async function analyzeImage() {
   const gray8 = grayFromRgb8(rgba, width, height)
   const engine = await getRuleEngine()
   const regions = engine.detect({ rgba, gray, gray8, width, height })
-  analysis = { width, height, rgba, gray, regions }
+  // 只保留区域信息：全分辨率像素数组在识别完成后立即释放
+  analysis = { width, height }
   detectedRegions = regions
   return regions
+}
+
+/**
+ * 与 server.py 一致：没有形状掩膜的区域按 repair_padding 向外扩一圈。
+ * 紧贴水印的矩形会让 LaMa 照着水印笔画继续画（出现文字状鬼影），
+ * 留出干净边界后才会重建底层纹理。
+ */
+function expandRepairPadding(region, width, height) {
+  const padding = Math.max(0, Math.round(region.repairPadding || 0))
+  if (region.mask || padding === 0) return region
+  const x = Math.max(0, region.x - padding)
+  const y = Math.max(0, region.y - padding)
+  return {
+    ...region,
+    x,
+    y,
+    width: Math.min(width, region.x + region.width + padding) - x,
+    height: Math.min(height, region.y + region.height + padding) - y,
+  }
 }
 
 /** 把某个区域的掩膜映射到窗口坐标系（1:1 像素），返回 Float32 掩膜 */
@@ -480,7 +500,7 @@ elements.run.addEventListener('click', async () => {
 
     const timings = []
     for (let index = 0; index < regions.length; index++) {
-      const region = regions[index]
+      const region = expandRepairPadding(regions[index], sourceBitmap.width, sourceBitmap.height)
       const label = `第 ${index + 1}/${regions.length} 处 · ${region.provider}`
       setStatus(`${label} 正在修复`, (index) / regions.length, '页面短暂无响应属于正常现象')
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -489,7 +509,14 @@ elements.run.addEventListener('click', async () => {
       const { image, mask } = buildInputs(target, window_, maskInWindow)
       const { feeds, tensors } = createFeeds(session, model, image, mask)
       const started = performance.now()
-      const result = await session.run(feeds)
+      // WASM 后端在极端内存压力下可能出现 run() 永不返回：用超时兜底，至少给出可操作的提示
+      const result = await Promise.race([
+        session.run(feeds),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error('本张推理超过 120 秒未返回，通常是手机内存不足')),
+          120000,
+        )),
+      ])
       timings.push(performance.now() - started)
       const outputTensor = result[session.outputNames[0]]
       compositeRegion(target, outputTensor.data, window_, maskInWindow)
@@ -517,6 +544,12 @@ elements.run.addEventListener('click', async () => {
   } catch (error) {
     console.error(error)
     const message = error.name === 'AbortError' ? '模型分段下载超过 3 分钟，请检查网络后重试' : (error.message || String(error))
+    if (/120 秒|内存不足|推理超时/.test(message)) {
+      // 会话可能已被卡死的 WASM 线程污染：释放后下次点击会重建，无需重开页面
+      await releaseActiveSession()
+      setStatus(`处理失败：${message}`, 0, '已释放模型会话，可直接再点一次')
+      return
+    }
     setStatus(`处理失败：${message}`, 0, '可直接再次点击重试')
   } finally { elements.run.disabled = false }
 })
