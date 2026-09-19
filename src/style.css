@@ -57,6 +57,7 @@ button { color: #07120e; background: #70e0b6; }
 button:disabled { opacity: .42; }
 .secondary { color: #e6edf8; background: #26344b; }
 .status-card { margin-top: 14px; padding: 16px; }
+.download-card { margin-top: 14px; padding: 14px 16px; border-color: #70e0b6; }
 .status-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: 14px; color: #c7d1e2; }
 progress { width: 100%; height: 9px; margin-top: 12px; accent-color: #70e0b6; }
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 14px 0 0; }

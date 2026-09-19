@@ -49,6 +49,10 @@ const elements = {
   queueSummary: document.querySelector('#queue-summary'),
   cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
+  downloadBar: document.querySelector('#download-bar'),
+  downloadStatus: document.querySelector('#download-status'),
+  downloadLabel: document.querySelector('#download-label'),
+  downloadProgress: document.querySelector('#download-progress'),
 }
 
 const state = {
@@ -110,6 +114,16 @@ function setMetrics(values) {
     box.append(dt, dd)
     return box
   }))
+}
+
+/** 下载进度条：固定在第一屏（header 下方），只在模型准备阶段出现 */
+function setDownloadBar(visible, text, ratio = null, detail = '') {
+  elements.downloadBar.hidden = !visible
+  if (!visible) return
+  elements.downloadStatus.textContent = text
+  elements.downloadLabel.textContent = detail
+  if (ratio === null) elements.downloadBarProgress.removeAttribute('value')
+  else elements.downloadBarProgress.value = Math.max(0, Math.min(1, ratio))
 }
 
 function baseMetrics() {
@@ -289,74 +303,88 @@ async function downloadChunk(chunk, sources, onProgress) {
 }
 
 async function fetchModel(model) {
-  const manifestUrl = new URL(model.manifest, assetBase).href
-  const manifest = await fetchManifest(model)
-  if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
+  try {
+    const manifestUrl = new URL(model.manifest, assetBase).href
+    const manifest = await fetchManifest(model)
+    if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
 
-  const cache = await openModelCache()
-  const bytes = new Uint8Array(manifest.totalSize)
-  let loaded = 0
-  let cachedCount = 0
-  let currentSource = ''
-  let switchedSource = false
+    const cache = await openModelCache()
+    const bytes = new Uint8Array(manifest.totalSize)
+    let loaded = 0
+    let cachedCount = 0
+    let currentSource = ''
+    let switchedSource = false
 
-  for (let index = 0; index < manifest.chunks.length; index++) {
-    const chunk = manifest.chunks[index]
-    const chunkUrl = new URL(chunk.file, manifestUrl).href
-    const relativePath = chunkRelativePath(model, chunk)
+    for (let index = 0; index < manifest.chunks.length; index++) {
+      const chunk = manifest.chunks[index]
+      const chunkUrl = new URL(chunk.file, manifestUrl).href
+      const relativePath = chunkRelativePath(model, chunk)
 
-    const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
-    if (cached) {
-      bytes.set(cached, loaded)
-      loaded += cached.byteLength
-      cachedCount++
-      setStatus('正在读取已缓存的模型', loaded / manifest.totalSize,
-        `第 ${cachedCount} 段来自本机缓存 · ${(loaded / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`)
-      continue
-    }
+      const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
+      if (cached) {
+        bytes.set(cached, loaded)
+        loaded += cached.byteLength
+        cachedCount++
+        const text = '正在读取已缓存的模型'
+        const detail = `第 ${cachedCount} 段来自本机缓存 · ${(loaded / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`
+        setDownloadBar(true, text, loaded / manifest.totalSize, detail)
+        setStatus(text, loaded / manifest.totalSize, detail)
+        continue
+      }
 
-    const sources = chunkSources(chunkUrl, relativePath)
-    const started = performance.now()
-    const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
-      currentSource = label
-      setStatus('正在下载 LaMa 模型', (loaded + have) / manifest.totalSize,
-        progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label))
-    })
-    bytes.set(chunkBytes.bytes, loaded)
-    loaded += chunkBytes.bytes.byteLength
-    currentSource = chunkBytes.source.label
-    preferredSourceLabel = chunkBytes.source.label
-    await writeCachedChunk(cache, chunkCacheKey(relativePath), chunkBytes.bytes)
+      const sources = chunkSources(chunkUrl, relativePath)
+      const started = performance.now()
+      const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
+        currentSource = label
+        const text = '正在下载 LaMa 模型'
+        const ratio = (loaded + have) / manifest.totalSize
+        const detail = progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label)
+        setDownloadBar(true, text, ratio, detail)
+        setStatus(text, ratio, detail)
+      })
+      bytes.set(chunkBytes.bytes, loaded)
+      loaded += chunkBytes.bytes.byteLength
+      currentSource = chunkBytes.source.label
+      preferredSourceLabel = chunkBytes.source.label
+      await writeCachedChunk(cache, chunkCacheKey(relativePath), chunkBytes.bytes)
 
-    // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
-    const seconds = Math.max(0.1, (performance.now() - started) / 1000)
-    const speed = chunkBytes.bytes.byteLength / seconds
-    if (speed < SLOW_SOURCE_BYTES_PER_SECOND && !switchedSource) {
-      switchedSource = true
-      const other = sources.find(source => source.label !== chunkBytes.source.label)
-      if (other) {
-        preferredSourceLabel = other.label
-        console.info(`当前源 ${chunkBytes.source.label} 速度 ${(speed / 1024).toFixed(0)} KB/s，下一段改用 ${other.label}`)
-        setStatus('当前线路较慢，正在切换下载源', loaded / manifest.totalSize, `已下载 ${(loaded / 1048576).toFixed(0)} MB，换源重试`)
+      // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
+      const seconds = Math.max(0.1, (performance.now() - started) / 1000)
+      const speed = chunkBytes.bytes.byteLength / seconds
+      if (speed < SLOW_SOURCE_BYTES_PER_SECOND && !switchedSource) {
+        switchedSource = true
+        const other = sources.find(source => source.label !== chunkBytes.source.label)
+        if (other) {
+          preferredSourceLabel = other.label
+          console.info(`当前源 ${chunkBytes.source.label} 速度 ${(speed / 1024).toFixed(0)} KB/s，下一段改用 ${other.label}`)
+          const text = '当前线路较慢，正在切换下载源'
+          const detail = `已下载 ${(loaded / 1048576).toFixed(0)} MB，换源重试`
+          setDownloadBar(true, text, loaded / manifest.totalSize, detail)
+          setStatus(text, loaded / manifest.totalSize, detail)
+        }
       }
     }
-  }
 
-  if (loaded !== manifest.totalSize) throw new Error('模型文件不完整')
+    if (loaded !== manifest.totalSize) throw new Error('模型文件不完整')
 
-  const expectedSha = manifest.sha256 || model.sha256
-  if (expectedSha && crypto?.subtle) {
-    setStatus('正在校验模型完整性', 1, '只需一次')
-    const digest = await crypto.subtle.digest('SHA-256', bytes)
-    const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
-    if (hex !== expectedSha) {
-      await clearModelCache(model)
-      throw new Error('模型校验未通过（下载过程中被截断），已清除缓存，请重新下载')
+    const expectedSha = manifest.sha256 || model.sha256
+    if (expectedSha && crypto?.subtle) {
+      const text = '正在校验模型完整性'
+      setDownloadBar(true, text, 1, '只需一次')
+      setStatus(text, 1, '只需一次')
+      const digest = await crypto.subtle.digest('SHA-256', bytes)
+      const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+      if (hex !== expectedSha) {
+        await clearModelCache(model)
+        throw new Error('模型校验未通过（下载过程中被截断），已清除缓存，请重新下载')
+      }
     }
+    if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
+    void refreshCacheTags()
+    return bytes
+  } finally {
+    setDownloadBar(false)
   }
-  if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
-  void refreshCacheTags()
-  return bytes
 }
 
 async function clearModelCache() {

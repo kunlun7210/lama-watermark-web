@@ -23,13 +23,12 @@
         <p>与 Mac 版同一套识别规则：豆包、即梦、千问、清言、元宝、文心、小红书。支持一次选多张、逐张处理、打包下载，全部在手机浏览器内完成。</p>
       </header>
 
-      <section class="card status-card" aria-live="polite">
+      <section class="card download-card" id="download-bar" hidden aria-live="polite">
         <div class="status-row">
-          <span id="status">等待选择图片</span>
-          <span id="progress-label"></span>
+          <span id="download-status">正在下载 LaMa 模型</span>
+          <span id="download-label"></span>
         </div>
-        <progress id="progress" max="1" value="0"></progress>
-        <dl id="metrics" class="metrics"></dl>
+        <progress id="download-progress" max="1" value="0"></progress>
       </section>
 
       <section class="card controls">
@@ -62,6 +61,15 @@
         <button id="save-all" class="secondary" type="button" hidden>打包下载（ZIP）</button>
         <button id="stop" class="secondary" type="button" hidden>停止</button>
         <button id="clear" class="secondary" type="button" hidden>清空列表</button>
+      </section>
+
+      <section class="card status-card" aria-live="polite">
+        <div class="status-row">
+          <span id="status">等待选择图片</span>
+          <span id="progress-label"></span>
+        </div>
+        <progress id="progress" max="1" value="0"></progress>
+        <dl id="metrics" class="metrics"></dl>
       </section>
 
       <section class="card queue-card" id="queue-card" hidden>
