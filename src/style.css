@@ -3,13 +3,39 @@
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
   background: #080d16;
   color: #f6f8fc;
+  /* iOS 横屏时会自动放大正文（text autosizing），把刚压好的横屏布局又撑爆。
+     显式声明 100% 关掉它，让字号完全由 CSS 决定。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 * { box-sizing: border-box; }
 /* 作者样式里的 display 会盖掉浏览器默认的 [hidden]{display:none}，必须显式补回来 */
 [hidden] { display: none !important; }
-body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 50% -20%, #223454 0, #080d16 48%); }
-.shell { width: min(980px, 100%); margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 16px max(32px, env(safe-area-inset-bottom)); }
+/* 100dvh：iOS Safari 未折叠地址栏时 100vh 是「含地址栏」的高度，比可视区大，
+   会在页面底部凭空多出一段可滚动空白。dvh 跟随实际可视高度，vh 作为老浏览器回退。
+   顺序不能反 —— 不认识的浏览器会丢弃整条声明，所以 vh 必须在前。
+   overscroll-behavior：批量处理要跑几分钟，用户在页面上滑时很容易误触发 Safari 的下拉刷新，
+   一刷新整批就没了。contain 关掉下拉刷新与边界回弹，把滚动留在页面内。 */
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overscroll-behavior-y: contain;
+  background: radial-gradient(circle at 50% -20%, #223454 0, #080d16 48%);
+}
+/* 安全区四边都要吃：竖屏只有上/下，横屏刘海会把左/右也咬掉 47~62pt（iPhone 13 47 / 15 Pro 59 / 17 与 17 Pro 62）。
+   先写一条纯 px 的 padding 兜底，再逐边用 max() 覆盖 —— 某些旧 WebKit 解析 max()/env() 失败会丢弃整条声明，
+   那样四边 padding 会一起归零，比不写还糟。 */
+.shell {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 28px 16px 32px;
+  padding-top: max(28px, env(safe-area-inset-top));
+  padding-right: max(16px, env(safe-area-inset-right));
+  padding-bottom: max(32px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left));
+}
 header { padding: 8px 4px 12px; }
 .eyebrow { color: #75d7b4; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
 h1 { margin: 10px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
@@ -106,3 +132,19 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
 .queue li button, .queue li .link-button { width: auto; min-height: 44px; padding: 0 12px; font-size: 13px; font-weight: 700; }
 .queue .q-actions { display: flex; gap: 8px; align-items: center; }
 @media (min-width: 760px) { .preview-grid { grid-template-columns: 1fr 1fr; } .controls { grid-template-columns: 1fr 1fr; } .model-picker, .picker, .selected-name, #run-batch, #stop, #clear { grid-column: 1 / -1; } .model-picker { grid-template-columns: 1fr 1fr; } .model-picker-title { grid-column: 1 / -1; } }
+/* ===== 横屏：iPhone 13 / 15 Pro / 17 / 17 Pro 横屏高度只有 390~402pt，是竖屏的一半 =====
+   竖屏的间距会把「开始批量处理」推出底部 Home 指示条（实测差 11~16px）。这里压缩间距与内边距。
+   ⚠️ 这一段必须留在文件最后：CSS 同权重选择器后定义者胜出，媒体查询本身不增加权重 ——
+   放在前面会被 .controls / .model-picker / .model-option 的常规声明覆盖掉（本机实测踩过这个坑）。
+   iPhone 17 / 17 Pro 横屏顶部有 20pt 安全区（前代是 0），所以横屏也要吃 env(top)。
+   压缩后 model-option 仍有 ~64px 高、按钮 min-height 保持 50px，都在 44pt 触摸下限之上。 */
+@media (max-height: 500px) and (orientation: landscape) {
+  .shell { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+  header { padding: 4px 4px 6px; }
+  h1 { margin: 4px 0 3px; font-size: 24px; }
+  header p { margin: 3px 0 2px; }
+  .controls { padding: 10px; gap: 8px; }
+  .model-picker { gap: 7px; }
+  .model-picker-title { margin-bottom: 5px; }
+  .model-option { padding: 9px 12px; }
+}

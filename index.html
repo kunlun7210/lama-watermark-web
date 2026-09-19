@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0d1422" />
+    <!-- 添加到主屏幕（页脚建议的用法）后以独立窗口打开，并让内容延伸到状态栏/灵动岛下方。
+         black-translucent 会把状态栏文字固定成白色 —— 本页是深色底，正好可读；
+         若将来加浅色主题，这一条必须先改掉，否则状态栏文字会看不见。
+         独立窗口下 env(safe-area-inset-top) 才会返回真值（iPhone 13 47pt / 15 Pro 59pt / 17 与 17 Pro 62pt），
+         Safari 标签页里它通常是 0（地址栏本身已经占了位置），两种情形 style.css 里的 max() 都兜得住。 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="LaMa 去水印" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2370e0b6'/%3E%3Cpath d='M16 35h32M22 25h20M27 45h10' stroke='%23081420' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E" />
     <title>LaMa 去水印</title>
     <script>

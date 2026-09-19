@@ -949,12 +949,44 @@ async function processItem(item) {
 
 /* ---------------- 批量处理 ---------------- */
 
+/**
+ * 批量处理期间保持屏幕常亮。
+ * iPhone 上这是刚需：处理几十张要几分钟，用户一放下手机就自动锁屏，
+ * iOS 会立刻挂起 Safari 的 JS，推理直接断掉（而且不会自动续）。屏幕亮着就不会。
+ * Screen Wake Lock 需要 iOS 16.4+ / 安全上下文（https 或 localhost）。拿不到就静默降级，
+ * 不给用户报错 —— 这只是体验优化，不是功能依赖。
+ */
+let wakeLock = null
+async function acquireWakeLock() {
+  try {
+    if (!('wakeLock' in navigator) || wakeLock) return
+    wakeLock = await navigator.wakeLock.request('screen')
+    // 系统可能因低电量模式等主动回收，置空以便下次能重新申请
+    wakeLock.addEventListener('release', () => { wakeLock = null })
+  } catch {
+    wakeLock = null // 低电量模式、不支持、被拒绝 —— 都无所谓，继续跑
+  }
+}
+async function releaseWakeLock() {
+  try {
+    await wakeLock?.release()
+  } catch {
+    /* 已释放或从未获得 */
+  }
+  wakeLock = null
+}
+// 切回前台时若还在批量处理，重新申请（切后台/锁屏会让浏览器释放锁）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.running) void acquireWakeLock()
+})
+
 async function runBatch(items) {
   if (state.running || !items.length) return
   state.running = true
   state.stopRequested = false
   elements.stop.hidden = false
   renderQueue()
+  void acquireWakeLock() // 别 await：拿不到锁也要照常开始处理
   const started = performance.now()
   let index = 0
   let failed = 0
@@ -1004,6 +1036,7 @@ async function runBatch(items) {
   } finally {
     state.running = false
     elements.stop.hidden = true
+    void releaseWakeLock()
     const done = state.items.filter(entry => entry.status === 'done').length
     const unchanged = state.items.filter(entry => entry.status === 'unchanged').length
     const totalSeconds = ((performance.now() - started) / 1000).toFixed(1)
