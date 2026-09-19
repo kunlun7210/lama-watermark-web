@@ -10,10 +10,14 @@
 [hidden] { display: none !important; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 50% -20%, #223454 0, #080d16 48%); }
 .shell { width: min(980px, 100%); margin: 0 auto; padding: max(28px, env(safe-area-inset-top)) 16px max(32px, env(safe-area-inset-bottom)); }
-header { padding: 8px 4px 18px; }
+header { padding: 8px 4px 12px; }
 .eyebrow { color: #75d7b4; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
-h1 { margin: 10px 0 8px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
+h1 { margin: 10px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
 header p, .footnote { color: #aab5c8; line-height: 1.65; }
+/* 平台说明行：字号小一号（16→14px），同时显式收掉浏览器默认的 1em 上下外边距。
+   该行在 390pt 宽度下因此从 2 行收成 1 行，加上上面的留白压缩，
+   「点这里选择图片」及以下整体上移约两行高度 —— 第一屏能装下的内容明显变多。 */
+header p { margin: 8px 0 4px; font-size: 14px; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
