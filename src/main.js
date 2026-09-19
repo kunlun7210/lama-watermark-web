@@ -4,6 +4,22 @@ import { createRuleEngine } from './rules.js'
 import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { buildZip } from './zip.js'
 
+const APP_VERSION = __APP_VERSION__
+// 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
+// 刷新只影响页面本身，Cache Storage 里的模型缓存原样保留。
+void (async () => {
+  try {
+    const response = await fetch(new URL('version.json', document.baseURI), { cache: 'no-store' })
+    if (!response.ok) return
+    const { version } = await response.json()
+    if (!version || version === APP_VERSION) return
+    const key = 'lama-version-reload'
+    if (sessionStorage.getItem(key) === version) return // 已为本版本刷新过，防循环
+    sessionStorage.setItem(key, version)
+    location.reload()
+  } catch { /* 网络不可用时保持现状 */ }
+})()
+
 const MODEL_SIZE = 512
 const IMAGE_DB_NAME = 'lama-iphone-poc'
 const IMAGE_STORE = 'images'
@@ -339,7 +355,7 @@ async function fetchModel(model) {
         const text = '正在读取已缓存的模型'
         const detail = `第 ${cachedCount} 段来自本机缓存 · ${(loaded / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`
         setDownloadBar(true, text, loaded / manifest.totalSize, detail)
-        setStatus(text, loaded / manifest.totalSize, detail)
+        // 状态卡不再重复显示下载信息，只在顶部下载条展示
         continue
       }
 
@@ -351,7 +367,7 @@ async function fetchModel(model) {
         const ratio = (loaded + have) / manifest.totalSize
         const detail = progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label)
         setDownloadBar(true, text, ratio, detail)
-        setStatus(text, ratio, detail)
+
       })
       bytes.set(chunkBytes.bytes, loaded)
       loaded += chunkBytes.bytes.byteLength
@@ -371,7 +387,7 @@ async function fetchModel(model) {
           const text = '当前线路较慢，正在切换下载源'
           const detail = `已下载 ${(loaded / 1048576).toFixed(0)} MB，换源重试`
           setDownloadBar(true, text, loaded / manifest.totalSize, detail)
-          setStatus(text, loaded / manifest.totalSize, detail)
+
         }
       }
     }
@@ -382,7 +398,7 @@ async function fetchModel(model) {
     if (expectedSha && crypto?.subtle) {
       const text = '正在校验模型完整性'
       setDownloadBar(true, text, 1, '只需一次')
-      setStatus(text, 1, '只需一次')
+
       const digest = await crypto.subtle.digest('SHA-256', bytes)
       const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
       if (hex !== expectedSha) {
