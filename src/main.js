@@ -63,6 +63,7 @@ const elements = {
   queueCard: document.querySelector('#queue-card'),
   queue: document.querySelector('#queue'),
   queueSummary: document.querySelector('#queue-summary'),
+  picker: document.querySelector('.picker'),
   cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
@@ -1124,6 +1125,9 @@ async function addFiles(files, { restored = false } = {}) {
   const latest = state.items[state.items.length - 1]
   elements.selectedName.hidden = false
   elements.selectedName.textContent = `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
+  // 选完图立即在后台准备所选模型（下载/读缓存/校验），
+  // 进度显示在第一屏的下载条里；点「开始批量处理」时模型已就绪
+  void warmUpModel()
   try {
     const persisted = await saveSelectedFiles(state.items.map(item => item.file))
     if (!persisted) console.info('图片较多，未启用自动恢复缓存')
@@ -1132,7 +1136,27 @@ async function addFiles(files, { restored = false } = {}) {
   renderQueue()
 }
 
+/** 预热当前选中的模型：未缓存就开始下载（进度在顶部下载条），已缓存则直接建会话 */
+let warmUpStartedFor = null
+function warmUpModel() {
+  const model = selectedModel()
+  if (state.running || warmUpStartedFor === model.id) return
+  warmUpStartedFor = model.id
+  getSession(model)
+    .then(() => {
+      if (warmUpStartedFor === model.id) warmUpStartedFor = null
+      void refreshCacheTags()
+    })
+    .catch(error => {
+      if (warmUpStartedFor === model.id) warmUpStartedFor = null
+      console.warn('模型预热失败（点「开始批量处理」会重试）', error)
+    })
+}
+
 /* ---------------- 事件 ---------------- */
+
+// label 唤起在个别 iOS 版本上不稳定：点击选择卡时由 JS 主动触发文件框
+elements.picker?.addEventListener('click', () => { elements.file.click() })
 
 elements.file.addEventListener('change', async () => {
   await addFiles([...(elements.file.files || [])])
@@ -1143,6 +1167,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   setMetrics(baseMetrics())
   renderQueue()
   void refreshCacheTags()
+  if (state.items.length) void warmUpModel() // 已选图时切模型，立刻预热新模型
 }))
 
 elements.runBatch.addEventListener('click', () => {

@@ -16,8 +16,8 @@ h1 { margin: 10px 0 8px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
 header p, .footnote { color: #aab5c8; line-height: 1.65; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
-.model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 0; padding: 0; border: 0; }
-.model-picker legend { margin-bottom: 9px; color: #bac5d6; font-size: 14px; }
+.model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.model-picker-title { margin-bottom: 9px; color: #bac5d6; font-size: 14px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
 .model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
@@ -50,7 +50,9 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 .picker-title { grid-area: title; font-size: 16px; font-weight: 800; color: #a7f0d2; }
 .picker-hint { grid-area: hint; color: #b9c6d8; font-size: 13px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 原生文件框隐藏：只留上面那个醒目入口，标签点击依然能唤起系统选择器 */
-#file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+/* 视觉隐藏但保持可聚焦/可点击：不用 display:none（iOS 上会阻断 label 唤起），
+   也不用 pointer-events:none；clip 技术在旧 WebKit 上最稳 */
+#file-input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
 .selected-name { margin: 0; color: #75d7b4; font-size: 14px; overflow-wrap: anywhere; }
 button, .link-button { width: 100%; min-height: 50px; border: 0; border-radius: 13px; font: inherit; font-weight: 750; text-align: center; display: grid; place-items: center; text-decoration: none; }
 button { color: #07120e; background: #70e0b6; }
@@ -82,4 +84,4 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
 .queue .q-state { font-size: 12px; color: #99a6bb; margin-top: 3px; }
 .queue li button, .queue li .link-button { width: auto; min-height: 44px; padding: 0 12px; font-size: 13px; font-weight: 700; }
 .queue .q-actions { display: flex; gap: 8px; align-items: center; }
-@media (min-width: 760px) { .preview-grid { grid-template-columns: 1fr 1fr; } .controls { grid-template-columns: 1fr 1fr; } .model-picker, .picker, #file-input, .selected-name, #run-batch, #stop, #clear { grid-column: 1 / -1; } .model-picker { grid-template-columns: 1fr 1fr; } .model-picker legend { grid-column: 1 / -1; } }
+@media (min-width: 760px) { .preview-grid { grid-template-columns: 1fr 1fr; } .controls { grid-template-columns: 1fr 1fr; } .model-picker, .picker, .selected-name, #run-batch, #stop, #clear { grid-column: 1 / -1; } .model-picker { grid-template-columns: 1fr 1fr; } .model-picker-title { grid-column: 1 / -1; } }
