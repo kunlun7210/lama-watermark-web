@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0d1422" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2370e0b6'/%3E%3Cpath d='M16 35h32M22 25h20M27 45h10' stroke='%23081420' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <title>LaMa iPhone 可行性测试</title>
+    <title>LaMa 去水印 · iPhone 版</title>
     <script>
       window.coi = {
         coepCredentialless: () => false,
@@ -19,8 +19,8 @@
     <main class="shell">
       <header>
         <span class="eyebrow">本机浏览器推理 · 图片不会上传</span>
-        <h1>LaMa iPhone 可行性测试</h1>
-        <p>先用一张豆包生成图测试 iPhone 的内存、速度与效果。两个模型都在手机浏览器内运行，图片不会上传。</p>
+        <h1>LaMa 去水印 · iPhone 版</h1>
+        <p>与 Mac 版同一套识别规则：豆包、即梦、千问、清言、元宝、文心、小红书。全部在手机浏览器内推理，图片不上传。</p>
       </header>
 
       <section class="card controls">
@@ -36,8 +36,8 @@
           </label>
         </fieldset>
         <label class="picker" for="file-input">
-          <strong>选择一张豆包图片</strong>
-          <span>支持 JPG、PNG、WebP；优先使用测试集中的图片</span>
+          <strong>选择一张带水印的图片</strong>
+          <span>支持 JPG、PNG、WebP、HEIC；识别不到的水印会保持原图</span>
         </label>
         <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <p id="selected-name" class="selected-name" hidden></p>
@@ -66,7 +66,7 @@
         </figure>
       </section>
 
-      <p class="footnote">这是 iPhone 实机验证页，暂时只处理豆包右下角水印。首次打开会自动刷新一次以启用四线程；验证通过后再加入多平台规则、批量队列和 ZIP 导出。</p>
+      <p class="footnote">与 Mac 版共用同一套规则：豆包、即梦（左上+右下双水印）、千问、清言、元宝、文心、小红书；识别不到时保持原图，不会猜测位置。首次打开会自动刷新一次以启用四线程。Gemini 专用还原暂未移植。</p>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>
