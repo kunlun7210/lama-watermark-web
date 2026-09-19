@@ -17,14 +17,11 @@ const MODELS = {
 const elements = {
   file: document.querySelector('#file-input'),
   selectedName: document.querySelector('#selected-name'),
-  run: document.querySelector('#run'),
   runBatch: document.querySelector('#run-batch'),
   stop: document.querySelector('#stop'),
+  saveAlbum: document.querySelector('#save-album'),
   saveAll: document.querySelector('#save-all'),
-  shareAll: document.querySelector('#share-all'),
   clear: document.querySelector('#clear'),
-  share: document.querySelector('#share'),
-  download: document.querySelector('#download'),
   source: document.querySelector('#source'),
   result: document.querySelector('#result'),
   status: document.querySelector('#status'),
@@ -447,38 +444,40 @@ function renderQueue() {
 
     const actions = document.createElement('div')
     actions.className = 'q-actions'
-    const view = document.createElement('button')
-    view.type = 'button'
-    view.className = 'secondary'
-    view.textContent = '预览'
-    view.addEventListener('click', () => void showItem(item.id))
-    actions.append(view)
     if (item.url) {
-      const save = document.createElement('a')
-      save.className = 'secondary link-button'
-      save.href = item.url
-      save.download = outputName(item)
-      save.textContent = '保存'
+      // 单张「存图」：iOS 上走系统分享面板才能存进相册
+      const save = document.createElement('button')
+      save.type = 'button'
+      save.className = 'secondary'
+      save.textContent = '存图'
+      save.addEventListener('click', (event) => {
+        event.stopPropagation()
+        void saveToAlbum([item])
+      })
       actions.append(save)
+      if (!canShareFiles()) {
+        const link = document.createElement('a')
+        link.className = 'secondary link-button'
+        link.href = item.url
+        link.download = outputName(item)
+        link.textContent = '下载'
+        link.addEventListener('click', (event) => event.stopPropagation())
+        actions.append(link)
+      }
     }
 
+    li.addEventListener('click', () => { void showItem(item.id) })
     li.append(thumb, info, actions)
     return li
   }))
 
-  const hasResult = zipTargets().length
-  elements.saveAll.hidden = hasResult === 0
-  elements.saveAll.textContent = `保存全部（ZIP · ${hasResult} 张）`
-  elements.shareAll.hidden = hasResult === 0 || !navigator.share
+  const ready = albumTargets()
+  elements.saveAlbum.hidden = ready.length === 0 || !canShareFiles()
+  elements.saveAlbum.textContent = ready.length ? `存入相册（${ready.length} 张）` : '存入相册'
+  elements.saveAll.hidden = ready.length === 0
+  elements.saveAll.textContent = `打包下载（ZIP · ${ready.length} 张）`
   elements.clear.hidden = state.items.length === 0
   elements.runBatch.disabled = state.running || !state.items.some(item => needsProcessing(item))
-  elements.run.disabled = state.running || !currentItem()
-  elements.download.hidden = !currentItem()?.url
-  elements.share.hidden = !currentItem()?.url || !navigator.share
-  if (currentItem()?.url) {
-    elements.download.href = currentItem().url
-    elements.download.download = outputName(currentItem())
-  }
 }
 
 function needsProcessing(item) {
@@ -666,8 +665,47 @@ async function runBatch(items) {
   }
 }
 
+/** 已处理 + 未识别（保持原图）都算「有结果」，保证一张都不少 */
+function albumTargets() {
+  return state.items.filter(item => (item.status === 'done' || item.status === 'unchanged') && item.blob && item.url)
+}
+
+/** 探测一次：浏览器能否分享文件（iOS Safari 可以，桌面 Chrome 视平台而定） */
+let shareFilesSupport = null
+function canShareFiles() {
+  if (shareFilesSupport !== null) return shareFilesSupport
+  try {
+    const probe = new File([new Uint8Array([137, 80, 78, 71])], 'probe.png', { type: 'image/png' })
+    shareFilesSupport = !!(navigator.canShare && navigator.canShare({ files: [probe] }))
+  } catch { shareFilesSupport = false }
+  return shareFilesSupport
+}
+
+/** 存入相册：iOS 只有系统分享面板能把图片写进「照片」，分享面板里选「存储图像」 */
+async function saveToAlbum(items) {
+  const targets = items.filter(item => item.blob)
+  if (!targets.length) return
+  const files = targets.map(item => new File([item.blob], outputName(item), { type: outputFormat(item).mime }))
+  if (!canShareFiles()) {
+    const link = document.createElement('a')
+    link.href = targets[0].url
+    link.download = outputName(targets[0])
+    link.click()
+    setStatus('当前浏览器不支持直接分享文件', 1, '已改为下载第一张，其余可在列表里逐张保存')
+    return
+  }
+  setStatus(`正在打开分享面板（${files.length} 张）`, null, '在面板里选「存储图像」即可存进相册')
+  try {
+    await navigator.share({ files, title: 'LaMa 去水印结果' })
+    setStatus('已交给系统保存', 1, `${files.length} 张`)
+  } catch (error) {
+    if (error.name !== 'AbortError') setStatus(`保存失败：${error.message}`, 1)
+    else setStatus('已取消', 0)
+  }
+}
+
 async function saveAll() {
-  const finished = zipTargets()
+  const finished = albumTargets()
   if (!finished.length) return
   setStatus('正在打包 ZIP', null, '图片较多时需要一点时间')
   await new Promise(resolve => setTimeout(resolve, 0))
@@ -682,11 +720,6 @@ async function saveAll() {
   setStatus('ZIP 已生成', 1, `${finished.length} 张 · ${(zip.size / 1048576).toFixed(1)} MB`)
 }
 
-/** 已处理 + 未识别（保持原图）都入包，保证「一张都不少」 */
-function zipTargets() {
-  return state.items.filter(item => (item.status === 'done' || item.status === 'unchanged') && item.blob)
-}
-
 function zipEntries(finished) {
   return finished.map((item, index) => {
     const stem = item.name.replace(/\.[^.]+$/, '')
@@ -697,19 +730,6 @@ function zipEntries(finished) {
       blob: item.blob,
     }
   })
-}
-
-async function shareAll() {
-  const finished = zipTargets()
-  if (!finished.length) return
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')
-  const zip = await buildZip(zipEntries(finished))
-  const file = new File([zip], `去水印-${stamp}.zip`, { type: 'application/zip' })
-  try {
-    await navigator.share({ files: [file], title: 'LaMa 去水印结果' })
-  } catch (error) {
-    if (error.name !== 'AbortError') setStatus(`分享失败：${error.message}`, 1)
-  }
 }
 
 /* ---------------- 文件选择与缓存 ---------------- */
@@ -798,10 +818,7 @@ elements.runBatch.addEventListener('click', () => {
   void runBatch(targets)
 })
 
-elements.run.addEventListener('click', () => {
-  const item = currentItem()
-  if (item) void runBatch([item])
-})
+elements.saveAlbum.addEventListener('click', () => { void saveToAlbum(albumTargets()) })
 
 elements.stop.addEventListener('click', () => {
   state.stopRequested = true
@@ -809,7 +826,6 @@ elements.stop.addEventListener('click', () => {
 })
 
 elements.saveAll.addEventListener('click', () => { void saveAll() })
-elements.shareAll.addEventListener('click', () => { void shareAll() })
 
 elements.clear.addEventListener('click', () => {
   if (state.running) return
@@ -823,14 +839,6 @@ elements.clear.addEventListener('click', () => {
   setStatus('等待选择图片', 0)
   setMetrics({ 模型: selectedModel().label, 线程: String(ort.env.wasm.numThreads), 隔离模式: crossOriginIsolated ? '是' : '否', 连接: isSecureContext ? 'HTTPS' : 'HTTP' })
   renderQueue()
-})
-
-elements.share.addEventListener('click', async () => {
-  const item = currentItem()
-  if (!item?.blob) return
-  const format = outputFormat(item)
-  const file = new File([item.blob], outputName(item), { type: format.mime })
-  try { await navigator.share({ files: [file], title: 'LaMa 去水印结果' }) } catch (error) { if (error.name !== 'AbortError') setStatus(`分享失败：${error.message}`, 1) }
 })
 
 async function restoreSelectedFiles() {

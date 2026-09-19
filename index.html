@@ -42,13 +42,10 @@
         <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <p id="selected-name" class="selected-name" hidden></p>
         <button id="run-batch" type="button" disabled>开始批量处理</button>
-        <button id="run" class="secondary" type="button" disabled>只处理当前这张</button>
+        <button id="save-album" type="button" hidden>存入相册</button>
+        <button id="save-all" class="secondary" type="button" hidden>打包下载（ZIP）</button>
         <button id="stop" class="secondary" type="button" hidden>停止</button>
-        <button id="save-all" type="button" hidden>保存全部（ZIP）</button>
-        <button id="share-all" class="secondary" type="button" hidden>分享打包文件</button>
         <button id="clear" class="secondary" type="button" hidden>清空列表</button>
-        <button id="share" class="secondary" type="button" hidden>分享或保存当前结果</button>
-        <a id="download" class="secondary link-button" hidden>下载当前 PNG</a>
       </section>
 
       <section class="card status-card" aria-live="polite">
@@ -79,7 +76,7 @@
         </figure>
       </section>
 
-      <p class="footnote">与 Mac 版共用同一套规则：豆包、即梦（左上+右下双水印）、千问、清言、元宝、文心、小红书；识别不到时保持原图，不会猜测位置。首次打开会自动刷新一次以启用四线程。批量处理严格逐张执行、不并发，避免手机内存不足；ZIP 里一张都不会少——处理过的命名成「去水印-」，未识别的以「原图-」放入。Gemini 专用还原暂未移植。</p>
+      <p class="footnote">与 Mac 版共用同一套规则：豆包、即梦（左上+右下双水印）、千问、清言、元宝、文心、小红书；识别不到时保持原图，不会猜测位置。首次打开会自动刷新一次以启用四线程。批量处理严格逐张执行、不并发，避免手机内存不足。处理完点「存入相册」——系统分享面板里选「存储图像」就能写进照片（一次可存多张）；需要留档或用电脑处理时再点「打包下载（ZIP）」。Gemini 专用还原暂未移植。</p>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>
