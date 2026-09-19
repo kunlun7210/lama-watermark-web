@@ -137,3 +137,46 @@ INT8、4 线程、本机 Chrome 152，7 个平台样例全部与 Python 判定�
 - `.JPG` 实为 HEIC 的文件在桌面 Chrome 无法解码；iOS Safari 走系统解码，需在 iPhone 上确认。当前失败提示只回显文件名。
 - 批量选择、队列、ZIP 导出仍未实现。
 
+## 2026-09-19 上线后回归与修复（用户实测反馈：豆包效果不如测试版）
+
+用户上线后在 iPhone 上实测，反馈豆包在纯色背景上出现明显残留。定位到两个都是本次移植引入的回归：
+
+### 回归 1：修复区紧贴字形 → 文字状鬼影
+
+移植时把 Mac 版的 `repair_padding` 漏掉了。`server.py` 对**没有形状掩膜**的区域会把矩形向外扩一圈再交给 LaMa：
+
+```python
+padding = max(0, int(detection.get("repair_padding", 0)))   # 豆包为 max(8, round(short*0.006))
+```
+
+`doubao.py` 里对此有明确注释：掩膜紧贴字形时，LaMa 会照着水印笔画继续画（text-shaped remnants）；留出干净边界才会重建底层纹理。移植版直接用了检测器的矩形，于是纯色背景上残留最明显。
+
+修复：`expandRepairPadding()` 按 `server.py` 语义在区域外扩 `repairPadding`。
+
+### 回归 2：第 5 张起 `session.run()` 永不返回
+
+`analyzeImage()` 原本把全分辨率像素数组和区域一起缓存在模块级变量里：
+
+```js
+analysis = { width, height, rgba, gray, regions }   // rgba 18MB + float32 灰度 18MB + 灰度 4.5MB
+```
+
+按 2848×1600 计约 40MB/张，跨张留存且依赖惰性 GC。累积若干张后 WASM 侧分配失败，`session.run()` 的 Promise 永不 resolve —— 页面仍然响应（`Runtime.evaluate` 正常、无异常），但状态永远停在「正在修复」。逐张复现：第 1–4 张正常，第 5 张起必然卡死。
+
+修复：
+1. 识别完成后立即释放像素数组，只保留区域信息（`analysis = { width, height }`）。
+2. 每个区域推理加 120 秒超时兜底；超时视为会话已污染，调用 `releaseActiveSession()`，用户再点一次即可恢复，无需重开页面。
+
+修复后：本机与线上均连续 12 张通过，单张 3.2–3.3 s。
+
+### 与 Mac 版的画质对照（12 张豆包，水印区域 ×3 近景）
+
+| 指标 | 结果 |
+| --- | --- |
+| 12 张是否全部去净 | 12 / 12（无鬼影） |
+| 与 Mac 版输出的平均像素差 | **2.14 / 255** |
+| 最大差异 | 11.84 / 255（`IMG_7703 2.jpg`，面包表皮高频纹理，肉眼无差别） |
+
+对照报告：`~/WorkBuddy/2026-09-18-23-05-36/豆包修复对照-Mac版vs网页版.html`
+
+
