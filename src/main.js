@@ -191,16 +191,17 @@ function chunkRelativePath(model, chunk) {
   return (dir + chunk.file).replace(/^\.?\//, '')
 }
 
-function preferMirror() {
-  return new URLSearchParams(location.search).get('source') === 'mirror'
+function preferOrigin() {
+  return new URLSearchParams(location.search).get('source') === 'origin'
 }
 
+/** 默认 jsDelivr（国内通常更快），同源（GitHub Pages）备用；`?source=origin` 可强制同源优先 */
 function chunkSources(chunkUrl, relativePath) {
   const list = [
-    { label: '同源', url: chunkUrl },
     { label: 'jsDelivr', url: mirrorUrl(relativePath) },
+    { label: '同源', url: chunkUrl },
   ]
-  if (preferMirror()) list.reverse()
+  if (preferOrigin()) list.reverse()
   return orderSources(list)
 }
 
@@ -212,12 +213,11 @@ function orderSources(list) {
   return [hit, ...list.filter(source => source !== hit)]
 }
 
-/** 清单本身也要有备用源：GitHub Pages 在部分网络下会直接连不上 */
+/** 清单本身也默认走镜像：GitHub Pages 在部分网络下会直接连不上 */
 async function fetchManifest(model) {
   const sameOrigin = new URL(model.manifest, assetBase).href
-  const order = preferMirror()
-    ? [mirrorUrl(model.manifest), sameOrigin]
-    : [sameOrigin, mirrorUrl(model.manifest)]
+  const mirror = mirrorUrl(model.manifest)
+  const order = preferOrigin() ? [sameOrigin, mirror] : [mirror, sameOrigin]
   let lastError = null
   for (const url of order) {
     for (let attempt = 0; attempt < 2; attempt++) {
