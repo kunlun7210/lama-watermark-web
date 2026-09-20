@@ -1437,6 +1437,15 @@ async function restoreSelectedFiles() {
 }
 
 setMetrics(baseMetrics())
+// iOS 27 的 Liquid Glass 顶部栏会浮在网页内容之上做半透明淡化 ——
+// 实测 iPhone 17 Pro（iOS 27）首屏第一行「本机浏览器推理 · 图片不会上传」被压得看不清。
+// 这里按**系统版本**给整页加一段上边距让开它，旧系统完全不受影响。
+//
+// 为什么不能按机型判断：iPhone 17 与 17 Pro 的视口尺寸与像素比完全一致（402×874、3x），
+// CSS 与 JS 都区分不了这两台机器。真正引发问题的是 iOS 27，不是机型 ——
+// 按版本走既等价、又不会漏掉以后升级的其它设备。
+const iosMajor = Number((navigator.userAgent.match(/\bOS (\d+)[_.]/) || [])[1] || 0)
+if (iosMajor >= 27) document.documentElement.classList.add('ios-liquid-glass')
 // 版本号：语义版本取自 package.json，日期为构建日期（本地时区）—— 两者都由 vite define 注入，
 // 页面不再硬编码，避免「改了代码却忘了改页面上的版本号」。
 // 判空后再写：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失。

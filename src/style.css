@@ -170,3 +170,13 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
   .model-picker { gap: 7px; }
   .model-option { padding: 9px 12px; }
 }
+/* ===== iOS 27 Liquid Glass 适配 =====
+   顶部栏会浮在网页内容之上做半透明淡化，实测 iPhone 17 Pro（iOS 27）首屏第一行被压得看不清。
+   整页下移两行让开它；class 由 main.js 按系统版本（≥27）添加，旧系统完全不受影响。
+   放在文件最末，避免被上面的桌面/横屏媒体查询覆盖；只在竖屏应用（横屏工具栏位置不同，
+   且纵向空间本就紧张）。先写纯 px 回退，再写 max()/env() 版本 —— 旧 WebKit 解析失败时
+   整条声明会被丢弃，没有回退会让 padding 直接归零。 */
+@media (orientation: portrait) {
+  html.ios-liquid-glass .shell { padding-top: 68px; }
+  html.ios-liquid-glass .shell { padding-top: calc(max(28px, env(safe-area-inset-top)) + 40px); }
+}
