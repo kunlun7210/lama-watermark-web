@@ -37,7 +37,7 @@ const MIRROR_REPO = 'kunlun7210/lama-watermark-web@b7cb12e5a1b74a2cf66372f903756
 const MODELS = {
   int8: {
     id: 'int8',
-    label: 'INT8 62MB',
+    label: 'INT8 · 62MB',
     manifest: 'models/int8/manifest.json',
     inputLayout: 'masked-rgb-mask',
     sha256: 'cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe',
@@ -45,7 +45,7 @@ const MODELS = {
   },
   fp32: {
     id: 'fp32',
-    label: 'FP32 198MB',
+    label: 'FP32 · 198MB',
     manifest: 'models/fp32/manifest.json',
     inputLayout: 'image-mask',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
