@@ -44,13 +44,21 @@ export default defineConfig({
     conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production'],
   },
   server: {
-    allowedHosts: ['.trycloudflare.com'],
+    // allowedHosts 是开发/预览服务器对 Host 头的白名单校验（防 DNS rebinding）。
+    // 用「点开头」的通配子域而不是 true：保持校验开启，只放行确实需要的域名。
+    // ⚠️ 托管平台（WorkBuddy/CloudStudio 沙箱）转发过来的 Host 是**内部沙箱域名**
+    //    （形如 3000-<sandboxId>.e2b.<region>.sandbox.cloudstudio.club），不是对外那个
+    //    lama-watermark.app.workbuddy.host。只放行后者会被拦成
+    //    403 "Blocked request. This host ... is not allowed."（页面白屏、连 HTML 都拿不到）。
+    allowedHosts: ['.trycloudflare.com', '.workbuddy.host', '.cloudstudio.club'],
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
   },
   preview: {
+    // 同上：托管平台用 `vite preview` 提供构建产物
+    allowedHosts: ['.trycloudflare.com', '.workbuddy.host', '.cloudstudio.club'],
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',

@@ -9,7 +9,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "test": "node scripts/verify-models.mjs && node scripts/verify-gemini.mjs && npm run build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "npm run build && vite preview --host 0.0.0.0 --port ${PORT:-4173}"
   },
   "dependencies": {
     "coi-serviceworker": "0.1.7",
