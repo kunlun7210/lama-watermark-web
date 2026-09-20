@@ -53,8 +53,10 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
 /* 主流程只回答「现在用的是哪个模型」，不摆选项。低内存机型上 FP32 有 OOM 风险，
-   且实测画质差异可辨像素仅 0.3% —— 让用户在两个模型间二选一是制造犯错机会。 */
-.model-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
+   且实测画质差异可辨像素仅 0.3% —— 让用户在两个模型间二选一是制造犯错机会。
+   注意这里是「标签 + 值」顺排（gap），不是两端对齐：卡片较宽时 space-between
+   会把值推到最右边、中间空出一大片，视觉上很散（按用户反馈改的）。 */
+.model-summary { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-summary-label { color: #99a6bb; font-size: 13.5px; }
 .model-summary-value { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .model-summary-value strong { font-size: 14.5px; white-space: nowrap; }
