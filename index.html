@@ -78,6 +78,8 @@
               </span>
             </label>
           </div>
+          <!-- 线程数是内部实现细节，不该占主界面的位置；需要排查性能时才看得到 -->
+          <p class="model-more-note">推理线程 <strong id="thread-count">-</strong>（由设备与浏览器的跨源隔离决定）</p>
         </details>
         <p id="selected-name" class="selected-name" hidden></p>
         <button id="run-batch" type="button" disabled>开始批量处理</button>

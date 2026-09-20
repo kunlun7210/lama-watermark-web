@@ -70,6 +70,9 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .model-more[open] > summary::before { content: '▾ '; }
 .model-more > summary:hover { color: #a7b4c6; }
 .model-more .model-picker { margin-top: 9px; }
+/* 折叠区里的补充信息行：同样压低存在感 */
+.model-more-note { margin: 10px 2px 2px; color: #7b8ba3; font-size: 12px; }
+.model-more-note strong { color: #bac5d6; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }

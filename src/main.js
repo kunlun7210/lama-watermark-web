@@ -74,6 +74,8 @@ const elements = {
   // 主界面「本地 AI 模型」那一行：只展示当前选中的模型，不做选择
   currentModelLabel: document.querySelector('#current-model-label'),
   cacheTagCurrent: document.querySelector('#cache-tag-current'),
+  // 线程数现在只出现在「模型信息」折叠区里
+  threadCount: document.querySelector('#thread-count'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
   downloadStatus: document.querySelector('#download-status'),
@@ -154,7 +156,8 @@ function setStatus(text, ratio = null, detail = '') {
 }
 
 function setMetrics(values) {
-  elements.metrics.replaceChildren(...Object.entries(values).map(([label, value]) => {
+  const entries = Object.entries(values)
+  elements.metrics.replaceChildren(...entries.map(([label, value]) => {
     const box = document.createElement('div')
     const dt = document.createElement('dt')
     const dd = document.createElement('dd')
@@ -163,6 +166,9 @@ function setMetrics(values) {
     box.append(dt, dd)
     return box
   }))
+  // 没有指标可显示时整块收起来 —— 未选图时只有「识别结果 未处理」这类空信息，
+  // 留着会在第一屏占掉一片位置
+  elements.metrics.hidden = entries.length === 0
 }
 
 /**
@@ -190,19 +196,27 @@ function setDownloadBar(visible, text, ratio = null, detail = '') {
   else progress.value = Math.max(0, Math.min(1, ratio))
 }
 
-function baseMetrics() {
-  const item = currentItem()
+/**
+ * 主指标区只回答两件事：识别到哪个平台、这张花了多久。
+ * 删掉的那些都有替代、属于内部实现，或信息量太低：
+ *   图片尺寸 —— 预览区直接看得到
+ *   模型     —— 上方「本地 AI 模型」那行已经写了，重复
+ *   线程数   —— 内部实现细节，移进「模型信息」折叠区
+ *   本次推理 —— 与「总耗时」是两个含义相近的秒数，留一个就够
+ *   区域数   —— 实际只会是 1 或 2（最多即梦两处水印），两种取值不值得占一格
+ */
+function displayMetrics(item) {
+  if (!item) return {}
   const metrics = {
-    图片: item?.width ? `${item.width} × ${item.height}` : '未选择',
-    模型: selectedModel().label,
+    识别结果: item.provider || (item.status === 'pending' ? '未处理' : '未识别'),
   }
-  // 线程数同时反映跨源隔离是否生效（4 = 生效，1 = 退回单线程），不再单列「隔离模式」。
-  // 但只在已经选好图片后才显示：没选图时它只是个与用户操作无关的内部参数，
-  // 白占第一屏一格，还容易被当成一个能点的开关。
-  // 判据与上面「图片」那一栏严格同步 —— 图片栏显示尺寸才出现线程，视觉上不会自相矛盾。
-  // 注意：这里刻意不用 state.items.length，否则队列非空但当前项尚未解码时会不一致。
-  if (item?.width) metrics.线程 = String(ort.env.wasm.numThreads)
+  if (item.elapsed) metrics.总耗时 = item.elapsed
   return metrics
+}
+
+/** 线程数只出现在「模型信息」折叠区里 */
+function updateThreadCount() {
+  if (elements.threadCount) elements.threadCount.textContent = String(ort.env.wasm.numThreads)
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -969,12 +983,7 @@ async function showItem(id) {
       0,
       item.status === 'pending' || item.status === 'failed' ? '点「开始批量处理」会重跑这张' : '',
     )
-    setMetrics({
-      ...baseMetrics(),
-      识别结果: item.provider || (item.status === 'pending' ? '未处理' : '未识别'),
-      区域数: String(item.regions || 0),
-      本次推理: item.elapsed || '-',
-    })
+    setMetrics(displayMetrics(item))
     renderQueue()
   } catch (error) {
     setStatus(`图片读取失败：${error.message}`, 0)
@@ -1055,13 +1064,7 @@ async function processItem(item) {
   item.modelId = model.id
   item.elapsed = `${((performance.now() - totalStarted) / 1000).toFixed(1)} 秒`
   item.inferSeconds = (inferMs / 1000).toFixed(1)
-  item.metrics = {
-    ...baseMetrics(),
-    识别结果: item.provider || '未识别',
-    区域数: String(item.regions || 0),
-    本次推理: inferMs ? `${item.inferSeconds} 秒` : '-',
-    总耗时: item.elapsed,
-  }
+  item.metrics = displayMetrics(item)
   state.currentId = item.id
   renderQueue()
   return item
@@ -1133,6 +1136,7 @@ async function runBatch(items) {
           const next = Math.max(1, Math.floor(ort.env.wasm.numThreads / 2))
           try { localStorage.setItem(THREAD_PREF_KEY, String(next)) } catch { /* 忽略 */ }
           ort.env.wasm.numThreads = next
+          updateThreadCount() // 折叠区里显示的线程数要跟着变
           await releaseActiveSession()
           item.status = 'pending'
           item.error = null
@@ -1148,7 +1152,7 @@ async function runBatch(items) {
         }
       }
       renderQueue()
-      setMetrics(item.metrics || baseMetrics())
+      setMetrics(item.metrics || displayMetrics(item))
       setStatus(
         `第 ${index}/${items.length} 张 · ${item.status === 'failed' ? '失败' : item.status === 'unchanged' ? '未识别' : '已完成'}`,
         index / items.length,
@@ -1373,7 +1377,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
     return
   }
   setStatus('模型已切换', 0, '再次「开始批量处理」会用新模型重跑')
-  setMetrics(baseMetrics())
+  setMetrics(displayMetrics(currentItem()))
   renderQueue()
   void refreshCacheTags()
   if (state.items.length) void warmUpModel() // 已选图时切模型，立刻预热新模型
@@ -1406,7 +1410,7 @@ elements.clear.addEventListener('click', async () => {
   elements.source.width = elements.source.height = 0
   elements.result.width = elements.result.height = 0
   setStatus('等待选择图片', 0)
-  setMetrics(baseMetrics())
+  setMetrics({})
   renderQueue()
 })
 
@@ -1436,7 +1440,8 @@ async function restoreSelectedFiles() {
   }
 }
 
-setMetrics(baseMetrics())
+setMetrics({})
+updateThreadCount()
 // iOS 27 的 Liquid Glass 顶部栏会浮在网页内容之上做半透明淡化 ——
 // 实测 iPhone 17 Pro（iOS 27）首屏第一行「本机浏览器推理 · 图片不会上传」被压得看不清。
 // 这里按**系统版本**给整页加一段上边距让开它，旧系统完全不受影响。
