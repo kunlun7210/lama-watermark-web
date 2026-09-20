@@ -52,8 +52,23 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 header p { margin: 8px 0 4px; font-size: 14px; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
+/* 主流程只回答「现在用的是哪个模型」，不摆选项。低内存机型上 FP32 有 OOM 风险，
+   且实测画质差异可辨像素仅 0.3% —— 让用户在两个模型间二选一是制造犯错机会。 */
+.model-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
+.model-summary-label { color: #99a6bb; font-size: 13.5px; }
+.model-summary-value { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.model-summary-value strong { font-size: 14.5px; white-space: nowrap; }
+.model-summary-hint { margin: 0; color: #7b8ba3; font-size: 12px; line-height: 1.5; }
+/* 折叠区刻意做小做灰：需要它的人找得到，不需要的人不会去点。
+   名字用中性的「模型信息」——「高级选项」本身就带暗示，等于换个方式诱导。
+   用原生 details/summary，不引入 JS 状态。 */
+.model-more > summary { cursor: pointer; color: #7b8ba3; font-size: 12.5px; padding: 2px; list-style: none; }
+.model-more > summary::-webkit-details-marker { display: none; }
+.model-more > summary::before { content: '▸ '; }
+.model-more[open] > summary::before { content: '▾ '; }
+.model-more > summary:hover { color: #a7b4c6; }
+.model-more .model-picker { margin-top: 9px; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
-.model-picker-title { margin-bottom: 9px; color: #bac5d6; font-size: 14px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
 .model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
@@ -137,7 +152,7 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
 .queue .q-state { font-size: 12px; color: #99a6bb; margin-top: 3px; }
 .queue li button, .queue li .link-button { width: auto; min-height: 44px; padding: 0 12px; font-size: 13px; font-weight: 700; }
 .queue .q-actions { display: flex; gap: 8px; align-items: center; }
-@media (min-width: 760px) { .preview-grid { grid-template-columns: 1fr 1fr; } .controls { grid-template-columns: 1fr 1fr; } .model-picker, .picker, .selected-name, #run-batch, #stop, #clear { grid-column: 1 / -1; } .model-picker { grid-template-columns: 1fr 1fr; } .model-picker-title { grid-column: 1 / -1; } }
+@media (min-width: 760px) { .preview-grid { grid-template-columns: 1fr 1fr; } .controls { grid-template-columns: 1fr 1fr; } .model-summary, .model-summary-hint, .model-more, .model-picker, .picker, .selected-name, #run-batch, #stop, #clear { grid-column: 1 / -1; } .model-picker { grid-template-columns: 1fr 1fr; } }
 /* ===== 横屏：iPhone 13 / 15 Pro / 17 / 17 Pro 横屏高度只有 390~402pt，是竖屏的一半 =====
    竖屏的间距会把「开始批量处理」推出底部 Home 指示条（实测差 11~16px）。这里压缩间距与内边距。
    ⚠️ 这一段必须留在文件最后：CSS 同权重选择器后定义者胜出，媒体查询本身不增加权重 ——
@@ -151,6 +166,5 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
   header p { margin: 3px 0 2px; }
   .controls { padding: 10px; gap: 8px; }
   .model-picker { gap: 7px; }
-  .model-picker-title { margin-bottom: 5px; }
   .model-option { padding: 9px 12px; }
 }

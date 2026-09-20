@@ -71,6 +71,9 @@ const elements = {
   queueSummary: document.querySelector('#queue-summary'),
   picker: document.querySelector('.picker'),
   cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
+  // 主界面「本地 AI 模型」那一行：只展示当前选中的模型，不做选择
+  currentModelLabel: document.querySelector('#current-model-label'),
+  cacheTagCurrent: document.querySelector('#cache-tag-current'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
   downloadStatus: document.querySelector('#download-status'),
@@ -545,26 +548,30 @@ const SLOW_SOURCE_BYTES_PER_SECOND = 120 * 1024
 
 /** 把每个模型的缓存状态直接标在模型名后面（不再单独占一行指标） */
 async function refreshCacheTags() {
+  const selected = selectedModel()
   await Promise.all(Object.values(MODELS).map(async model => {
     const tag = elements.cacheTags[model.id]
     if (!tag) return
     const status = await modelCacheStatus(model)
+    let text = '', cls = ''
     if (!status.supported) {
       tag.hidden = true
-      return
-    }
-    tag.hidden = false
-    if (status.have === status.total) {
-      tag.textContent = '已缓存'
-      tag.className = 'model-cache-tag cached'
+    } else if (status.have === status.total) {
+      text = '已缓存'; cls = 'model-cache-tag cached'
     } else if (status.have === 0) {
-      tag.textContent = '未缓存'
-      tag.className = 'model-cache-tag missing'
+      text = '未缓存'; cls = 'model-cache-tag missing'
     } else {
-      tag.textContent = `${status.have}/${status.total} 段`
-      tag.className = 'model-cache-tag partial'
+      text = `${status.have}/${status.total} 段`; cls = 'model-cache-tag partial'
+    }
+    if (!tag.hidden) { tag.textContent = text; tag.className = cls }
+    // 主界面那一行展示的是「当前选中的模型」，缓存状态要跟着它走
+    if (model.id === selected.id && elements.cacheTagCurrent) {
+      const cur = elements.cacheTagCurrent
+      cur.hidden = !!tag.hidden
+      if (!tag.hidden) { cur.textContent = text; cur.className = cls }
     }
   }))
+  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
 }
 
 async function releaseActiveSession() {

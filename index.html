@@ -50,23 +50,35 @@
           <span class="picker-hint">可多选 · JPG / PNG / WebP / HEIC</span>
         </div>
         <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
-        <div class="model-picker">
-          <div class="model-picker-title">选择模型</div>
-          <label class="model-option">
-            <input type="radio" name="model" value="int8" checked />
-            <span>
-              <span class="model-line"><strong>INT8 · 62MB</strong><em id="cache-tag-int8" class="model-cache-tag">检查中</em></span>
-              <small>下载和内存压力较小，画质接近 FP32</small>
-            </span>
-          </label>
-          <label class="model-option">
-            <input type="radio" name="model" value="fp32" />
-            <span>
-              <span class="model-line"><strong>FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
-              <small>更接近现有 Mac 版，用于画质基准</small>
-            </span>
-          </label>
+        <!-- 主流程只显示「当前用的是哪个模型」，不摆出选项让用户二选一。
+             理由：INT8 与 FP32 的实测差异 MAE 仅 2.45/255（可辨像素 0.3%），
+             但 FP32 要多下 136MB、建会话慢 26 倍、低内存机型有 OOM 风险 ——
+             把选择权交给用户等于制造一个很容易选错的选择。
+             想对比测试的人仍可从下面的折叠区切换。 -->
+        <div class="model-summary">
+          <span class="model-summary-label">本地 AI 模型</span>
+          <span class="model-summary-value"><strong id="current-model-label">INT8 · 62MB</strong><em id="cache-tag-current" class="model-cache-tag">检查中</em></span>
         </div>
+        <p class="model-summary-hint">首次使用需要下载，之后自动缓存，无需重下。</p>
+        <details class="model-more">
+          <summary>模型信息</summary>
+          <div class="model-picker">
+            <label class="model-option">
+              <input type="radio" name="model" value="int8" checked />
+              <span>
+                <span class="model-line"><strong>INT8 · 62MB</strong><em id="cache-tag-int8" class="model-cache-tag">检查中</em></span>
+                <small>下载和内存压力较小，画质接近 FP32</small>
+              </span>
+            </label>
+            <label class="model-option">
+              <input type="radio" name="model" value="fp32" />
+              <span>
+                <span class="model-line"><strong>FP32 模型 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
+                <small>画质基准，手机不推荐，无明显视觉提升。</small>
+              </span>
+            </label>
+          </div>
+        </details>
         <p id="selected-name" class="selected-name" hidden></p>
         <button id="run-batch" type="button" disabled>开始批量处理</button>
         <button id="save-album" type="button" hidden>存入相册</button>
