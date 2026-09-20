@@ -121,6 +121,15 @@ const stateExpression = `(() => {
         return data[3] > 0
       } catch { return null }
     })(),
+    // 主线程心跳：推理若在主线程上跑，这个定时器会被整段阻塞、出现秒级空档。
+    heartbeat: window.__hb ? { ticks: window.__hb.ticks, maxGap: Math.round(window.__hb.maxGap) } : null,
+    // 主线程上的「长任务」：把「卡顿到底是谁造成的」从推测变成读数。
+    longTasks: window.__lt ? {
+      count: window.__lt.count,
+      max: Math.round(window.__lt.max),
+      total: Math.round(window.__lt.total),
+      top: window.__lt.top.map(d => Math.round(d)),
+    } : null,
   }
 })()`
 const readState = () => evaluate(stateExpression)
@@ -157,13 +166,52 @@ const picked = await waitFor(
 )
 console.log('  已选入: queue=' + picked.queue + ' 隔离=' + picked.isolated + ' 可运行=' + !picked.runDisabled)
 
+// 装一个主线程心跳：推理若跑在主线程，这个定时器会被整段阻塞、出现秒级空档。
+// 同时盯住主线程上的长任务（longtask），用来区分「卡顿是推理造成的」还是
+// 「规则识别 / 画布合成造成的」—— 这两件事在界面上的表现一样，读数不一样。
+await evaluate(`(() => {
+  window.__hb = { ticks: 0, maxGap: 0, last: performance.now() }
+  const tick = () => {
+    const now = performance.now()
+    window.__hb.maxGap = Math.max(window.__hb.maxGap, now - window.__hb.last)
+    window.__hb.last = now
+    window.__hb.ticks++
+    setTimeout(tick, 50)
+  }
+  setTimeout(tick, 50)
+  window.__lt = { count: 0, max: 0, total: 0, top: [] }
+  try {
+    new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        window.__lt.count++
+        window.__lt.total += entry.duration
+        window.__lt.max = Math.max(window.__lt.max, entry.duration)
+        window.__lt.top.push(entry.duration)
+        window.__lt.top.sort((a, b) => b - a)
+        window.__lt.top.length = Math.min(window.__lt.top.length, 5)
+      }
+    }).observe({ entryTypes: ['longtask'] })
+  } catch { /* 个别环境不支持 longtask，忽略 */ }
+  return true
+})()`)
 await evaluate(`document.querySelector('#run-batch').click(); true`)
-const finished = await waitFor(
-  readState,
-  value => !value.running && value.done + value.unchanged + value.failed === selected.length,
-  2400000,
-  '批量处理完成',
-)
+
+// 「主线程有没有被推理冻结」还有一个不受页面定时器节流影响的量法：
+// 从 CDP 外部轮询读状态，看每次往返耗时。标签页被隐藏时 setTimeout 会被压到
+// 1 秒以上，会污染页内心跳读数，所以以这个外部读数为主、页内心跳为辅。
+const pollDurations = []
+const pollStarted = Date.now()
+let finished
+while (Date.now() - pollStarted < 2400000) {
+  const polledAt = Date.now()
+  finished = await readState()
+  pollDurations.push(Date.now() - polledAt)
+  if (!finished.running && finished.done + finished.unchanged + finished.failed === selected.length) break
+  await sleep(1000)
+}
+if (!finished || finished.running) throw new Error('批量处理完成 超时')
+const maxPollMs = Math.max(...pollDurations)
+const phaseAWallSec = (Date.now() - pollStarted) / 1000
 console.log('  完成: ' + JSON.stringify({
   已处理: finished.done,
   保持原图: finished.unchanged,
@@ -171,6 +219,22 @@ console.log('  完成: ' + JSON.stringify({
   状态: finished.status,
   汇总: finished.summary,
 }))
+const hb = finished.heartbeat
+const avgGap = hb && hb.ticks ? (phaseAWallSec * 1000 / hb.ticks) : null
+console.log('  主线程响应: 轮询最长往返 ' + maxPollMs + 'ms（' + pollDurations.length + ' 次）'
+  + ' · 整批墙钟 ' + phaseAWallSec.toFixed(1) + ' 秒')
+console.log('  页内心跳: ' + JSON.stringify(hb)
+  + (avgGap ? ' · 平均间隔 ' + avgGap.toFixed(0) + 'ms（理想 50ms，越大说明主线程越忙）' : ''))
+console.log('  主线程长任务: ' + JSON.stringify(finished.longTasks))
+
+// 实测基线（20 张 Gemini 图，同机同批，模型已缓存）：
+//   v0.11.2 推理在主线程：整批 161.6s · 长任务 37 个 / 累计 157s · 心跳平均间隔 1405ms
+//   v0.12.0 推理在 Worker：整批 146.0s · 长任务 20 个 / 累计  79s · 心跳平均间隔  120ms
+// 两个读数只打印、不断言：绝对值依赖机器与图片，硬断言会变成 flaky 测试。
+// ⚠️ 别把「单次最长长任务」当成推理的锅 —— 两边都约 4.7 秒，它不是推理。
+// CDP 采样归因（未压缩构建）指向规则引擎的互相关搜索：
+//   ccorrMax 5.9s(35%) + nccMax 2.2s(13%)，定义在 imaging.js，由 rules.js 调用。
+// 那是算法文件，Worker 移植动不了它；要提速得单独做（降采样 / 预计算 / 换搜索策略）。
 
 // 状态区只应显示「识别结果」+「总耗时」
 const metrics = await evaluate(`(() => {

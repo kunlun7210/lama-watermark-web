@@ -1,9 +1,9 @@
-import * as ort from 'onnxruntime-web/wasm'
 import './style.css'
 import { createRuleEngine } from './rules.js'
 import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
+import { InferenceController } from './inference-controller.js'
 
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
@@ -97,12 +97,13 @@ const state = {
   lastModelLoadedMs: 0,
 }
 
-let activeSession = null
+const inference = new InferenceController()
+let activeModelId = null
 let sessionPromise = null
 let sessionModelId = null
 /** 正在进行的模型加载的中断器：换模型时用它取消旧任务（未下载完的段不再继续） */
 let sessionAbort = null
-/** 加载代次：只有最新一代允许写回 activeSession，防止旧任务完成后覆盖新会话 */
+/** 加载代次：只有最新一代允许写回当前 Worker，防止旧任务完成后覆盖新会话 */
 let sessionGeneration = 0
 let ruleEngine = null
 let ruleEnginePromise = null
@@ -117,6 +118,10 @@ const ortBase = new URL('ort/', assetBase).href
  * 之后再改 `ort.env.wasm.numThreads` 并不会重建线程池 ——
  * 官方文档也要求这些环境参数在创建第一个会话之前设定。
  * 也就是说运行时改数字只是改了个显示值，实际还是原线程数（评价第 3 条）。
+ *
+ * 现在线程数与整个 WASM 运行环境都搬进了独立 Worker。要换线程数只有一条路：
+ * terminate 掉旧 Worker、重建一个新的（见 releaseActiveSession）。
+ * 这反而是好事 —— 重建是「真正的初始化」，不再有「改了数字但线程池没重建」的陷阱。
  */
 const THREAD_PREF_KEY = 'lama-threads'
 
@@ -128,13 +133,8 @@ function preferredThreads() {
   return saved > 0 ? Math.max(1, Math.min(saved, ceiling)) : ceiling
 }
 
-ort.env.wasm.wasmPaths = {
-  wasm: `${ortBase}ort-wasm-simd-threaded.wasm`,
-  mjs: `${ortBase}ort-wasm-simd-threaded.mjs`,
-}
-ort.env.wasm.numThreads = preferredThreads()
-ort.env.wasm.simd = true
-ort.env.logLevel = 'warning'
+/** 当前 Worker 实际使用的线程数。线程数跟随会话，换线程数 = 重建 Worker */
+let currentThreads = preferredThreads()
 
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
@@ -233,8 +233,8 @@ function displayMetrics(item) {
  * 线程数不再显示在界面上 —— 它对用户没有意义（几个线程是内部实现）。
  * 只在控制台留一条：排查性能问题时需要它确认跨源隔离是否生效（4 = 生效，1 = 退回单线程）。
  */
-function logThreadCount() {
-  console.info(`推理线程：${ort.env.wasm.numThreads}（4 = 跨源隔离生效，1 = 退回单线程）`)
+function logThreadCount(reason = '') {
+  console.info(`推理线程：${currentThreads}（4 = 跨源隔离生效，1 = 退回单线程）${reason ? ` · ${reason}` : ''}`)
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -606,20 +606,27 @@ async function refreshCacheTags() {
   if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
 }
 
+/**
+ * 推理会话 = 一个独立 Worker。terminate 是唯一真正有效的释放手段：
+ * 它同时停掉正在初始化/推理的 ORT，并回收整套 WASM 内存与线程池。
+ * 旧的 session.release() 做不到 —— release 不保证中断进行中的 run，
+ * 所以「超时」之后主线程照旧卡死、内存也还占着（评价第 3 条）。
+ */
 async function releaseActiveSession() {
-  if (!activeSession) return
-  try { await activeSession.session.release?.() } catch (error) { console.warn('模型释放失败', error) }
-  activeSession = null
+  inference.terminate(new Error('推理会话已重建'))
+  activeModelId = null
 }
 
 function getSession(model) {
-  if (activeSession?.model.id === model.id) return Promise.resolve({ ...activeSession, loadMs: 0, reused: true })
+  if (activeModelId === model.id && inference.worker) return Promise.resolve({ model, loadMs: 0, reused: true })
   if (sessionPromise && sessionModelId === model.id) return sessionPromise
 
   // 换模型：先把上一次仍在进行的加载掐掉。
   // 否则 62MB 与 198MB 会同时下载、同时校验、同时初始化，iPhone 上内存峰值直接翻倍，
-  // 而且两个任务会争抢同一个 activeSession（评价第 3 条）。
+  // 而且两个任务会争抢同一个 Worker（评价第 3 条）。
   sessionAbort?.abort()
+  inference.terminate(new Error('模型已切换，旧推理已终止'))
+  activeModelId = null
   const controller = new AbortController()
   sessionAbort = controller
   const generation = ++sessionGeneration
@@ -631,21 +638,16 @@ function getSession(model) {
     let bytes = await fetchModel(model, controller.signal)
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
-    const session = await ort.InferenceSession.create(bytes, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
-      enableCpuMemArena: true,
-      enableMemPattern: true,
-    })
+    currentThreads = preferredThreads()
+    await inference.initialise({ model, modelBytes: bytes, threads: currentThreads, ortBase })
     bytes = null
-    // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己写回 activeSession ——
-    // 否则界面显示的是新模型，实际跑推理的却是这个旧会话（结果对不上，且没人释放它）。
-    if (generation !== sessionGeneration) {
-      try { await session.release?.() } catch { /* 忽略 */ }
-      throw new Error('模型已切换，本次加载作废')
-    }
-    activeSession = { session, model }
-    return { session, model, loadMs: performance.now() - started, reused: false }
+    // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己认成当前会话 ——
+    // 否则界面显示的是新模型，实际跑推理的却是这个旧 Worker（结果对不上）。
+    // 这里不必再 terminate：新一代加载在开头已经把它掐掉了。
+    if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
+    activeModelId = model.id
+    logThreadCount()
+    return { model, loadMs: performance.now() - started, reused: false }
   })().catch(error => {
     // 只有最新一代失败才清空，否则会把后来者的状态一起清掉
     if (generation === sessionGeneration) sessionModelId = null
@@ -812,22 +814,6 @@ function buildInputs(sourceCanvas, window_, maskInWindow) {
     }
   }
   return { image, mask }
-}
-
-function createFeeds(session, model, image, mask) {
-  if (model.inputLayout === 'masked-rgb-mask') {
-    const plane = MODEL_SIZE * MODEL_SIZE
-    const combined = new Float32Array(plane * 4)
-    for (let channel = 0; channel < 3; channel++) {
-      for (let index = 0; index < plane; index++) combined[channel * plane + index] = image[channel * plane + index] * (1 - mask[index])
-    }
-    combined.set(mask, plane * 3)
-    const tensor = new ort.Tensor('float32', combined, [1, 4, MODEL_SIZE, MODEL_SIZE])
-    return { feeds: { [session.inputNames[0]]: tensor }, tensors: [tensor] }
-  }
-  const imageTensor = new ort.Tensor('float32', image, [1, 3, MODEL_SIZE, MODEL_SIZE])
-  const maskTensor = new ort.Tensor('float32', mask, [1, 1, MODEL_SIZE, MODEL_SIZE])
-  return { feeds: { [session.inputNames[0]]: imageTensor, [session.inputNames[1]]: maskTensor }, tensors: [imageTensor, maskTensor] }
 }
 
 function compositeRegion(target, output, window_, maskInWindow) {
@@ -1078,7 +1064,7 @@ async function processItem(item) {
     if (detected.regions.length) {
       item.progressText = '正在准备模型'
       renderQueue()
-      const { session, loadMs, reused } = await getSession(model)
+      const { loadMs, reused } = await getSession(model)
       state.lastModelLoadedMs = reused ? 0 : loadMs
       const regions = detected.regions.map(region => expandRepairPadding(region, item.width, item.height))
       for (let index = 0; index < regions.length; index++) {
@@ -1090,20 +1076,12 @@ async function processItem(item) {
         const window_ = regionWindow(region, item.width, item.height)
         const maskInWindow = regionMaskInWindow(region, window_)
         const { image, mask } = buildInputs(targetContext.canvas, window_, maskInWindow)
-        const { feeds, tensors } = createFeeds(session, model, image, mask)
         const started = performance.now()
-        const result = await Promise.race([
-          session.run(feeds),
-          new Promise((_, reject) => setTimeout(
-            () => reject(new Error('本张推理超过 120 秒未返回，通常是手机内存不足')),
-            INFER_TIMEOUT_MS,
-          )),
-        ])
+        // 推理交给独立 Worker：主线程不再被阻塞，超时能真正 terminate 掉推理。
+        // 返回的就是结果张量的裸数据（Float32Array），直接拿去合成。
+        const output = await inference.run(image, mask, INFER_TIMEOUT_MS)
         inferMs += performance.now() - started
-        const outputTensor = result[session.outputNames[0]]
-        compositeRegion(targetContext.canvas, outputTensor.data, window_, maskInWindow)
-        tensors.forEach(tensor => tensor.dispose?.())
-        outputTensor.dispose?.()
+        compositeRegion(targetContext.canvas, output, window_, maskInWindow)
       }
     }
     item.status = 'done'
@@ -1182,7 +1160,6 @@ async function runBatch(items) {
   const started = performance.now()
   let index = 0
   let failed = 0
-  let oomDowngrades = 0
   try {
     for (let loopIndex = 0; loopIndex < items.length; loopIndex++) {
       const item = items[loopIndex]
@@ -1190,40 +1167,42 @@ async function runBatch(items) {
       index++
       const fraction = (index - 1) / items.length
       setStatus(`第 ${index}/${items.length} 张 · ${item.name}`, fraction, '逐张处理中，请保持 Safari 在前台')
-      try {
-        await processItem(item)
-        item.progressText = ''
-      } catch (error) {
-        console.error(error)
-        // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
-        // ⚠️ 光改 ort.env.wasm.numThreads 是不够的：WASM 线程池在模块首次初始化时建立，
-        // 之后改这个值不会重建线程池（评价第 3 条）。所以这里做两件事：
-        //   1) 把降级偏好落盘 —— 下次加载时在建首个会话之前就用低线程数，这才真正生效；
-        //   2) 仍当场改一次并重试 —— 若 wasm 模块尚未完全初始化，当场改也可能起效。
-        if (isOutOfMemory(error) && ort.env.wasm.numThreads > 1 && oomDowngrades < 2) {
-          oomDowngrades++
-          const next = Math.max(1, Math.floor(ort.env.wasm.numThreads / 2))
-          try { localStorage.setItem(THREAD_PREF_KEY, String(next)) } catch { /* 忽略 */ }
-          ort.env.wasm.numThreads = next
-          logThreadCount() // 控制台里记一笔，排查 OOM 时能看到降到了几线程
-          await releaseActiveSession()
-          item.status = 'pending'
-          item.error = null
-          item.progressText = `内存不足，已降为 ${next} 线程重试；若仍失败，刷新页面即可稳定生效`
+      let oomDowngrades = 0
+      // 用内层循环重试当前张：OOM 时不需要刷新页面、也不需要退回外层重排，
+      // 当场重建一个低线程 Worker 再跑一遍就行（旧版必须刷新才生效）。
+      while (true) {
+        try {
           // 结局未定，先把旧结果清掉：pending 的条目不该挂着一份结果。
           // 重试若成功会重新写盘，所以这里不会丢东西。
           await deleteResultRecord(item.id)
-          loopIndex-- // 重试当前张（抵消循环自增）
-        } else {
+          await processItem(item)
+          item.progressText = ''
+          break
+        } catch (error) {
+          console.error(error)
+          // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
+          // Worker 是会话的生命周期边界：terminate 掉它，WASM 内存与线程池一并归还，
+          // 再以 2/1 线程重建，当场重试 —— 无需刷新页面。
+          if (isOutOfMemory(error) && currentThreads > 1 && oomDowngrades < 2) {
+            oomDowngrades++
+            currentThreads = currentThreads > 2 ? 2 : 1
+            try { localStorage.setItem(THREAD_PREF_KEY, String(currentThreads)) } catch { /* 忽略 */ }
+            await releaseActiveSession()
+            item.status = 'pending'
+            item.error = null
+            item.progressText = `内存不足，已重建为 ${currentThreads} 线程并重试`
+            logThreadCount('因内存不足自动降级')
+            renderQueue()
+            continue
+          }
           item.status = 'failed'
           item.error = isOutOfMemory(error)
-            ? '设备内存不足。已记住降低线程数，请刷新页面后再试（建议同时切到 INT8 模型、关闭其他 Safari 标签页）'
+            ? '设备内存不足；建议切到 INT8 模型、关闭其他 Safari 标签页后重试'
             : friendlyError(item, error)
           failed++
-          // 这张之前可能成功过（换模型重跑、或用户重跑）。旧结果必须清掉，
-          // 否则刷新后被还原成失败之前的成功状态，界面与实际不符。
           await deleteResultRecord(item.id)
-          if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
+          if (/120 秒|内存不足|推理超时|推理线程/.test(item.error)) await releaseActiveSession()
+          break
         }
       }
       renderQueue()
@@ -1584,7 +1563,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   // 结果不可比；而且中途加载另一个模型会让内存峰值翻倍（评价第 3 条）。
   if (state.running) {
     input.checked = false
-    const effective = activeSession?.model.id || sessionModelId || 'int8'
+    const effective = activeModelId || sessionModelId || 'int8'
     const back = elements.modelInputs.find(item => item.value === effective)
     if (back) back.checked = true
     setStatus('处理中不能切换模型', 0, '点「停止」或等这批跑完再切换')
