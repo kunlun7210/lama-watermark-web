@@ -98,11 +98,30 @@ let ruleEnginePromise = null
 
 const assetBase = new URL(import.meta.env.BASE_URL, location.href)
 const ortBase = new URL('ort/', assetBase).href
+
+/**
+ * 线程数偏好键。内存不足时把它调低并落盘，下次加载生效。
+ * ⚠️ 为什么必须「下次加载生效」而不是当场生效：
+ * ONNX Runtime 的 WASM 线程池在 **wasm 模块首次初始化时**建立，
+ * 之后再改 `ort.env.wasm.numThreads` 并不会重建线程池 ——
+ * 官方文档也要求这些环境参数在创建第一个会话之前设定。
+ * 也就是说运行时改数字只是改了个显示值，实际还是原线程数（评价第 3 条）。
+ */
+const THREAD_PREF_KEY = 'lama-threads'
+
+/** 本次加载该用几个线程：跨源隔离可用才有多线程；再叠加用户被 OOM 降级后的偏好 */
+function preferredThreads() {
+  const ceiling = crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1
+  let saved = 0
+  try { saved = Number(localStorage.getItem(THREAD_PREF_KEY)) || 0 } catch { /* 忽略 */ }
+  return saved > 0 ? Math.max(1, Math.min(saved, ceiling)) : ceiling
+}
+
 ort.env.wasm.wasmPaths = {
   wasm: `${ortBase}ort-wasm-simd-threaded.wasm`,
   mjs: `${ortBase}ort-wasm-simd-threaded.mjs`,
 }
-ort.env.wasm.numThreads = crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1
+ort.env.wasm.numThreads = preferredThreads()
 ort.env.wasm.simd = true
 ort.env.logLevel = 'warning'
 
@@ -1088,20 +1107,24 @@ async function runBatch(items) {
       } catch (error) {
         console.error(error)
         // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
-        // 自适应降线程重试当前这张：4 → 2 → 1，1 线程仍失败才算真失败。
+        // ⚠️ 光改 ort.env.wasm.numThreads 是不够的：WASM 线程池在模块首次初始化时建立，
+        // 之后改这个值不会重建线程池（评价第 3 条）。所以这里做两件事：
+        //   1) 把降级偏好落盘 —— 下次加载时在建首个会话之前就用低线程数，这才真正生效；
+        //   2) 仍当场改一次并重试 —— 若 wasm 模块尚未完全初始化，当场改也可能起效。
         if (isOutOfMemory(error) && ort.env.wasm.numThreads > 1 && oomDowngrades < 2) {
           oomDowngrades++
           const next = Math.max(1, Math.floor(ort.env.wasm.numThreads / 2))
+          try { localStorage.setItem(THREAD_PREF_KEY, String(next)) } catch { /* 忽略 */ }
           ort.env.wasm.numThreads = next
           await releaseActiveSession()
           item.status = 'pending'
           item.error = null
-          item.progressText = `内存不足，已自动降为 ${next} 线程，重试这张`
+          item.progressText = `内存不足，已降为 ${next} 线程重试；若仍失败，刷新页面即可稳定生效`
           loopIndex-- // 重试当前张（抵消循环自增）
         } else {
           item.status = 'failed'
           item.error = isOutOfMemory(error)
-            ? '设备内存不足：已自动降低线程仍失败。建议切换 INT8 模型（内存占用小得多），或关闭其他 Safari 标签页后再试'
+            ? '设备内存不足。已记住降低线程数，请刷新页面后再试（建议同时切到 INT8 模型、关闭其他 Safari 标签页）'
             : friendlyError(item, error)
           failed++
           if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
