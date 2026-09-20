@@ -74,12 +74,10 @@
               <input type="radio" name="model" value="fp32" />
               <span>
                 <span class="model-line"><strong>FP32 模型 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
-                <small>画质基准，手机不推荐，无明显视觉提升。</small>
+                <small>画质基准，手机端不推荐，无明显视觉提升。</small>
               </span>
             </label>
           </div>
-          <!-- 线程数是内部实现细节，不该占主界面的位置；需要排查性能时才看得到 -->
-          <p class="model-more-note">推理线程 <strong id="thread-count">-</strong>（由设备与浏览器的跨源隔离决定）</p>
         </details>
         <p id="selected-name" class="selected-name" hidden></p>
         <button id="run-batch" type="button" disabled>开始批量处理</button>

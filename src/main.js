@@ -74,8 +74,6 @@ const elements = {
   // 主界面「本地 AI 模型」那一行：只展示当前选中的模型，不做选择
   currentModelLabel: document.querySelector('#current-model-label'),
   cacheTagCurrent: document.querySelector('#cache-tag-current'),
-  // 线程数现在只出现在「模型信息」折叠区里
-  threadCount: document.querySelector('#thread-count'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
   downloadStatus: document.querySelector('#download-status'),
@@ -214,9 +212,12 @@ function displayMetrics(item) {
   return metrics
 }
 
-/** 线程数只出现在「模型信息」折叠区里 */
-function updateThreadCount() {
-  if (elements.threadCount) elements.threadCount.textContent = String(ort.env.wasm.numThreads)
+/**
+ * 线程数不再显示在界面上 —— 它对用户没有意义（几个线程是内部实现）。
+ * 只在控制台留一条：排查性能问题时需要它确认跨源隔离是否生效（4 = 生效，1 = 退回单线程）。
+ */
+function logThreadCount() {
+  console.info(`推理线程：${ort.env.wasm.numThreads}（4 = 跨源隔离生效，1 = 退回单线程）`)
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -1136,7 +1137,7 @@ async function runBatch(items) {
           const next = Math.max(1, Math.floor(ort.env.wasm.numThreads / 2))
           try { localStorage.setItem(THREAD_PREF_KEY, String(next)) } catch { /* 忽略 */ }
           ort.env.wasm.numThreads = next
-          updateThreadCount() // 折叠区里显示的线程数要跟着变
+          logThreadCount() // 控制台里记一笔，排查 OOM 时能看到降到了几线程
           await releaseActiveSession()
           item.status = 'pending'
           item.error = null
@@ -1441,7 +1442,7 @@ async function restoreSelectedFiles() {
 }
 
 setMetrics({})
-updateThreadCount()
+logThreadCount()
 // iOS 27 的 Liquid Glass 顶部栏会浮在网页内容之上做半透明淡化 ——
 // 实测 iPhone 17 Pro（iOS 27）首屏第一行「本机浏览器推理 · 图片不会上传」被压得看不清。
 // 这里按**系统版本**给整页加一段上边距让开它，旧系统完全不受影响。
