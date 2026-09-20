@@ -89,6 +89,10 @@ const state = {
 let activeSession = null
 let sessionPromise = null
 let sessionModelId = null
+/** 正在进行的模型加载的中断器：换模型时用它取消旧任务（未下载完的段不再继续） */
+let sessionAbort = null
+/** 加载代次：只有最新一代允许写回 activeSession，防止旧任务完成后覆盖新会话 */
+let sessionGeneration = 0
 let ruleEngine = null
 let ruleEnginePromise = null
 
@@ -310,7 +314,7 @@ async function writeCachedChunk(cache, cacheKey, bytes) {
  *     （旧实现只在 status !== 206 时清零，而坏源同样返回 206，所以从来没清过 —— 这就是下载失败的根因。）
  *  2) noResume 的源（jsDelivr）连同一源内的重试也不续传，每次重试都从头下整段。
  */
-async function downloadChunk(chunk, sources, onProgress) {
+async function downloadChunk(chunk, sources, onProgress, externalSignal) {
   let lastError = null
   let received = []
   let have = 0
@@ -321,9 +325,15 @@ async function downloadChunk(chunk, sources, onProgress) {
     have = 0
     received = []
     for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
+      // 外部取消（用户切换模型）：立刻退出，既不重试也不换源
+      if (externalSignal?.aborted) throw new Error('模型已切换，下载已取消')
       // 铁律 2：不支持可靠续传的源，每次重试都重新整段下载
       if (source.noResume) { have = 0; received = [] }
       const controller = new AbortController()
+      // 把外部的取消信号接到本次请求上。不用 AbortSignal.any()：
+      // 它要 Safari 17.4+，手写联动在各版本上都成立。
+      const onExternalAbort = () => controller.abort()
+      externalSignal?.addEventListener('abort', onExternalAbort, { once: true })
       let idle
       const armIdle = () => {
         clearTimeout(idle)
@@ -360,20 +370,24 @@ async function downloadChunk(chunk, sources, onProgress) {
         return { bytes, source }
       } catch (error) {
         clearTimeout(idle)
+        // 被外部取消（切换模型）：不要当网络失败去重试、更不要换下一个源
+        if (externalSignal?.aborted) throw new Error('模型已切换，下载已取消')
         lastError = error.name === 'AbortError' ? new Error('网络空闲超过 45 秒') : error
         console.info(`第 ${attempt + 1} 次尝试失败（已收到 ${(have / 1048576).toFixed(1)}MB，下次从该位置续传）：${lastError.message}`)
         if (have >= chunk.size) break
         await new Promise(resolve => setTimeout(resolve, Math.min(8000, 800 * (attempt + 1))))
+      } finally {
+        externalSignal?.removeEventListener('abort', onExternalAbort)
       }
     }
     if (sourceIndex + 1 < sources.length) {
-      console.info(`换用备用源：${sources[sourceIndex + 1].label}（已下载 ${(have / 1048576).toFixed(1)}MB 保留）`)
+      console.info(`换用备用源：${sources[sourceIndex + 1].label}（本段从头重下，不跨源拼接）`)
     }
   }
   throw lastError || new Error('模型分段下载失败')
 }
 
-async function fetchModel(model) {
+async function fetchModel(model, signal) {
   try {
     const manifestUrl = new URL(model.manifest, assetBase).href
     const manifest = await fetchManifest(model)
@@ -387,6 +401,8 @@ async function fetchModel(model) {
     let switchedSource = false
 
     for (let index = 0; index < manifest.chunks.length; index++) {
+      // 每段开始前检查一次：被取消后不要再继续读缓存/下载别的段
+      if (signal?.aborted) throw new Error('模型已切换，下载已取消')
       const chunk = manifest.chunks[index]
       const chunkUrl = new URL(chunk.file, manifestUrl).href
       const relativePath = chunkRelativePath(model, chunk)
@@ -411,8 +427,7 @@ async function fetchModel(model) {
         const ratio = (loaded + have) / manifest.totalSize
         const detail = progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label)
         setDownloadBar(true, text, ratio, detail)
-
-      })
+      }, signal)
       bytes.set(chunkBytes.bytes, loaded)
       loaded += chunkBytes.bytes.byteLength
       currentSource = chunkBytes.source.label
@@ -532,11 +547,21 @@ async function releaseActiveSession() {
 function getSession(model) {
   if (activeSession?.model.id === model.id) return Promise.resolve({ ...activeSession, loadMs: 0, reused: true })
   if (sessionPromise && sessionModelId === model.id) return sessionPromise
+
+  // 换模型：先把上一次仍在进行的加载掐掉。
+  // 否则 62MB 与 198MB 会同时下载、同时校验、同时初始化，iPhone 上内存峰值直接翻倍，
+  // 而且两个任务会争抢同一个 activeSession（评价第 3 条）。
+  sessionAbort?.abort()
+  const controller = new AbortController()
+  sessionAbort = controller
+  const generation = ++sessionGeneration
+
   sessionModelId = model.id
   sessionPromise = (async () => {
     await releaseActiveSession()
     const started = performance.now()
-    let bytes = await fetchModel(model)
+    let bytes = await fetchModel(model, controller.signal)
+    if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
     const session = await ort.InferenceSession.create(bytes, {
       executionProviders: ['wasm'],
@@ -545,12 +570,21 @@ function getSession(model) {
       enableMemPattern: true,
     })
     bytes = null
+    // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己写回 activeSession ——
+    // 否则界面显示的是新模型，实际跑推理的却是这个旧会话（结果对不上，且没人释放它）。
+    if (generation !== sessionGeneration) {
+      try { await session.release?.() } catch { /* 忽略 */ }
+      throw new Error('模型已切换，本次加载作废')
+    }
     activeSession = { session, model }
     return { session, model, loadMs: performance.now() - started, reused: false }
   })().catch(error => {
-    sessionModelId = null
+    // 只有最新一代失败才清空，否则会把后来者的状态一起清掉
+    if (generation === sessionGeneration) sessionModelId = null
     throw error
-  }).finally(() => { sessionPromise = null })
+  }).finally(() => {
+    if (generation === sessionGeneration) { sessionPromise = null; sessionAbort = null }
+  })
   return sessionPromise
 }
 
@@ -1251,7 +1285,11 @@ async function addFiles(files, { restored = false } = {}) {
   void warmUpModel()
   try {
     const persisted = await saveSelectedFiles(state.items.map(item => item.file))
-    if (!persisted) console.info('图片较多，未启用自动恢复缓存')
+    if (!persisted) {
+      // 别只写 console —— 用户会默认「关掉页面再打开一定能恢复」（评价第 7 条）。
+      // 写在选图信息那一行：不占用状态文字，也不会被模型下载进度覆盖。
+      elements.selectedName.textContent += ' · 图片较多，本次不启用自动恢复'
+    }
   } catch (error) { console.warn('无法缓存所选图片', error) }
   await showItem(latest.id)
   renderQueue()
@@ -1284,6 +1322,16 @@ elements.file.addEventListener('change', async () => {
 })
 
 elements.modelInputs.forEach(input => input.addEventListener('change', () => {
+  // 批量处理期间不允许切换模型：这一批会变成「前几张用旧模型、后几张用新模型」，
+  // 结果不可比；而且中途加载另一个模型会让内存峰值翻倍（评价第 3 条）。
+  if (state.running) {
+    input.checked = false
+    const effective = activeSession?.model.id || sessionModelId || 'int8'
+    const back = elements.modelInputs.find(item => item.value === effective)
+    if (back) back.checked = true
+    setStatus('处理中不能切换模型', 0, '点「停止」或等这批跑完再切换')
+    return
+  }
   setStatus('模型已切换', 0, '再次「开始批量处理」会用新模型重跑')
   setMetrics(baseMetrics())
   renderQueue()
@@ -1350,7 +1398,16 @@ async function restoreSelectedFiles() {
 
 setMetrics(baseMetrics())
 // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天
-void navigator.storage?.persist?.().catch(() => {})
+// 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
+// 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——
+// 页脚文案已据此写成不依赖该结果的表述（评价第 8 条）。
+void navigator.storage?.persist?.()
+  .then(granted => {
+    console.info(granted
+      ? '已获得持久化存储，模型缓存不易被系统清理'
+      : '未获得持久化存储：空间紧张时模型缓存可能被系统回收，重下即可')
+  })
+  .catch(() => { /* 不支持该 API 就静默跳过 */ })
 void refreshCacheTags()
 void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
 void restoreSelectedFiles()

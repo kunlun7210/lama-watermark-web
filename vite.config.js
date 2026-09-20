@@ -23,6 +23,15 @@ export default defineConfig({
   base: './',
   define: { __APP_VERSION__: JSON.stringify(APP_VERSION) },
   plugins: [versionPlugin()],
+  resolve: {
+    // ORT 的默认入口里含 `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)`，
+    // Vite 见到就会把 13MB 的 wasm 复制进 dist/assets —— 而我们运行时用的是
+    // public/ort/ 那一份（由 ort.env.wasm.wasmPaths 指向），于是产物里躺着两份同样的
+    // 13MB wasm，白白多出 13MB 发布体积（评价第 11 条）。
+    // 切到 ORT 官方的「外部 wasm」入口即可：该变体不含任何 wasm URL 引用。
+    // 必须把 Vite 的默认条件一并列出 —— 这个字段是覆盖而非追加，漏掉会破坏其它依赖的解析。
+    conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production'],
+  },
   server: {
     allowedHosts: ['.trycloudflare.com'],
     headers: {

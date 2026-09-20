@@ -11,9 +11,29 @@ const CRC_TABLE = (() => {
   return table
 })()
 
-function crc32(bytes) {
-  let crc = 0xffffffff
+/** 增量 CRC32：可分批喂入，配合 blobCrc32 使用 */
+function crc32Update(crc, bytes) {
   for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
+  return crc
+}
+
+/** 分块大小：1MB。峰值内存 = 一块，而不是整张图 */
+const CRC_STEP = 1 << 20
+
+/**
+ * 分块计算 Blob 的 CRC32。
+ * 旧实现是 `new Uint8Array(await blob.arrayBuffer())` 一次性把整个文件读进 JS 堆 ——
+ * 一张 4000×3000 的 PNG 就是十几 MB，批量导出十几张时堆里会持续累积，
+ * 与本文件头部「内容不复制进 JS 堆」的说法正好相反。
+ * 现在每块读完即丢，只有 1MB 的临时缓冲。
+ */
+async function blobCrc32(blob) {
+  let crc = 0xffffffff
+  for (let offset = 0; offset < blob.size; offset += CRC_STEP) {
+    const end = Math.min(offset + CRC_STEP, blob.size)
+    const part = new Uint8Array(await blob.slice(offset, end).arrayBuffer())
+    crc = crc32Update(crc, part)
+  }
   return (crc ^ 0xffffffff) >>> 0
 }
 
@@ -43,8 +63,9 @@ export async function buildZip(entries) {
 
   for (const entry of entries) {
     const nameBytes = encoder.encode(entry.name)
-    const data = new Uint8Array(await entry.blob.arrayBuffer())
-    const checksum = crc32(data)
+    // 只分块读一遍算 CRC；数据本体以 Blob 引用拼进 zip，不复制进堆
+    const size = entry.blob.size
+    const checksum = await blobCrc32(entry.blob)
 
     const header = new Writer(30)
     header.u32(0x04034b50)
@@ -54,8 +75,8 @@ export async function buildZip(entries) {
     header.u16(time)
     header.u16(day)
     header.u32(checksum)
-    header.u32(data.length)
-    header.u32(data.length)
+    header.u32(size)
+    header.u32(size)
     header.u16(nameBytes.length)
     header.u16(0)
     parts.push(header.bytes, nameBytes, entry.blob)
@@ -69,8 +90,8 @@ export async function buildZip(entries) {
     central.u16(time)
     central.u16(day)
     central.u32(checksum)
-    central.u32(data.length)
-    central.u32(data.length)
+    central.u32(size)
+    central.u32(size)
     central.u16(nameBytes.length)
     central.u16(0)
     central.u16(0)
@@ -80,7 +101,7 @@ export async function buildZip(entries) {
     central.u32(offset)
     centralParts.push(central.bytes, nameBytes)
 
-    offset += 30 + nameBytes.length + data.length
+    offset += 30 + nameBytes.length + size
   }
 
   const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0)
