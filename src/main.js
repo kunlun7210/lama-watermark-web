@@ -28,8 +28,11 @@ const RESTORE_LIMIT_COUNT = 40
 const INFER_TIMEOUT_MS = 120000
 const MODEL_CACHE_NAME = 'lama-model-v2'
 const CHUNK_RETRIES = 4
-// 备用镜像：GitHub 仓库经 jsDelivr CDN 分发，国内通常比 github.io 快
-const MIRROR_REPO = 'kunlun7210/lama-watermark-web@main'
+// 备用镜像：GitHub 仓库经 jsDelivr CDN 分发，国内通常比 github.io 快。
+// ⚠️ 必须钉在 commit hash 上，不能用 @main：jsDelivr 对分支引用只缓存 12 小时、内容会随推送变化，
+// 会出现「CDN 上还是旧文件、清单却已是新的」的校验死循环；commit hash 是永久且不可变的。
+// ⚠️ 模型文件更新后，这里要同步改成包含新文件的那个 commit。
+const MIRROR_REPO = 'kunlun7210/lama-watermark-web@b7cb12e5a1b74a2cf66372f90375683e567035a3'
 const MODELS = {
   int8: {
     id: 'int8',
@@ -186,7 +189,7 @@ function progressDetail(loaded, total, index, chunkCount, started, sourceLabel) 
   return `分段 ${index}/${chunkCount} · ${(loaded / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB · ${mbps.toFixed(1)} MB/s · 约剩 ${eta}${source}`
 }
 
-/** 同源（GitHub Pages）与 jsDelivr 镜像；两者都支持 Range，可续传 */
+/** jsDelivr 镜像地址。注意：它可用作整段下载源，但**不可用于 Range 续传**，见 chunkSources */
 function mirrorUrl(relativePath) {
   return `https://cdn.jsdelivr.net/gh/${MIRROR_REPO}/public/${relativePath.replace(/^\.?\//, '')}`
 }
@@ -209,10 +212,17 @@ function preferOrigin() {
 
 /** 三个源，默认顺序：jsDelivr（国内快）→ HuggingFace（模型原始出处，Cloudflare CDN）→ 同源（GitHub Pages）。
  *  rangeOffset：该源的 Range 起点参考系。镜像/同源的分段文件内偏移从 0 计；
- *  HF 是整个 onnx 文件，需用该段在整文件中的偏移（loaded），闭区间保证不下过头。 */
+ *  HF 是整个 onnx 文件，需用该段在整文件中的偏移（loaded），闭区间保证不下过头。
+ *
+ *  ⚠️ jsDelivr 必须带 noResume。实测（commit b7cb12e 的线上文件）：
+ *  同一文件同一区间请求 `Range: bytes=8000000-8001023`，它返回 206，
+ *  但 `Content-Range` 的总长报成 12207070（真实是 16777216），内容与原始文件不符；
+ *  而该文件的**全量下载 SHA-256 与本地完全一致** —— 即「文件是对的，Range 是错的」。
+ *  它照样返回 206，所以「只接受 206」这种校验挡不住它。
+ *  结论：它只能整段下载（速度优势保留），一旦让它在段内续传就会污染数据。 */
 function chunkSources(chunkUrl, relativePath, model, fileOffset) {
   const list = [
-    { label: 'jsDelivr', url: mirrorUrl(relativePath), rangeOffset: 0 },
+    { label: 'jsDelivr', url: mirrorUrl(relativePath), rangeOffset: 0, noResume: true },
     { label: 'HuggingFace', url: model.hf, rangeOffset: fileOffset },
     { label: '同源', url: chunkUrl, rangeOffset: 0 },
   ].filter(source => !!source.url)
@@ -290,9 +300,15 @@ async function writeCachedChunk(cache, cacheKey, bytes) {
 }
 
 /**
- * 单段下载：断线/超时后带退避重试，并用 Range 从已下载位置续传。
- * 手机上网络抖动很常见，整段重来在 0.2MB/s 的链路上代价太大 —— 所以进度必须留在重试循环之外。
+ * 单段下载：断线/超时后带退避重试，并从已下载位置续传。
+ * 手机上网络抖动很常见，整段重来在 0.2MB/s 的链路上代价太大 —— 所以进度保留在重试循环之外。
  * 源分两类：镜像/同源的分段文件内偏移从 0 计；HuggingFace 是整文件，rangeOffset 为该段在整文件中的偏移。
+ *
+ * ⚠️ 续传只在**同一个源内部**成立，两条铁律：
+ *  1) 换源必须清零。不同源的同名分片不保证字节一致（jsDelivr 实测会返回错误副本），
+ *     把上一个源已收的字节接到新源后面 = 「前半段错 + 后半段对」，只能等 SHA 校验失败后整段重下。
+ *     （旧实现只在 status !== 206 时清零，而坏源同样返回 206，所以从来没清过 —— 这就是下载失败的根因。）
+ *  2) noResume 的源（jsDelivr）连同一源内的重试也不续传，每次重试都从头下整段。
  */
 async function downloadChunk(chunk, sources, onProgress) {
   let lastError = null
@@ -301,7 +317,12 @@ async function downloadChunk(chunk, sources, onProgress) {
   for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
     const source = sources[sourceIndex]
     const rangeOffset = source.rangeOffset || 0
+    // 铁律 1：换源即从零开始，绝不跨源拼接
+    have = 0
+    received = []
     for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
+      // 铁律 2：不支持可靠续传的源，每次重试都重新整段下载
+      if (source.noResume) { have = 0; received = [] }
       const controller = new AbortController()
       let idle
       const armIdle = () => {
@@ -336,7 +357,7 @@ async function downloadChunk(chunk, sources, onProgress) {
         const bytes = new Uint8Array(chunk.size)
         let offset = 0
         for (const part of received) { bytes.set(part, offset); offset += part.byteLength }
-        return { bytes, source, resumed: received.length > 1 || have > chunk.size }
+        return { bytes, source }
       } catch (error) {
         clearTimeout(idle)
         lastError = error.name === 'AbortError' ? new Error('网络空闲超过 45 秒') : error
@@ -437,9 +458,27 @@ async function fetchModel(model) {
   }
 }
 
-async function clearModelCache() {
+/**
+ * 只清掉指定型号的缓存。
+ * 旧实现形参写了 model 却完全没用它，直接 caches.delete(整个库) ——
+ * 后果是 INT8 校验失败会把已经下好的 FP32 一起删掉（反之亦然），
+ * 用户只是换了个模型试，却要重新下载两百多兆。
+ * 缓存键本身带模型目录（models/int8/…），据此只删该型号下的分段即可。
+ * 不传 model 时保留整库清空的能力，排障时仍可用。
+ */
+async function clearModelCache(model) {
+  if (typeof caches === 'undefined') return
   try {
-    if (typeof caches !== 'undefined') await caches.delete(MODEL_CACHE_NAME)
+    if (!model?.manifest) { await caches.delete(MODEL_CACHE_NAME); return }
+    const manifest = String(model.manifest)
+    const slash = manifest.lastIndexOf('/')
+    const prefix = chunkCacheKey(slash >= 0 ? manifest.slice(0, slash + 1) : '')
+    const cache = await caches.open(MODEL_CACHE_NAME)
+    const keys = await cache.keys()
+    // 只删该型号目录下的分段；清单走 fetch 不落 Cache，所以不会误删别的型号
+    await Promise.all(
+      keys.filter(request => request.url.startsWith(prefix)).map(request => cache.delete(request)),
+    )
   } catch (error) { console.warn('清除模型缓存失败', error) }
 }
 
@@ -853,7 +892,13 @@ async function showItem(id) {
     } else {
       resultContext.clearRect(0, 0, item.width, item.height)
     }
-    setStatus(`${item.name} · ${itemStateText(item)}`, 0, '点「只处理当前这张」可单独重跑')
+    // 旧文案指向的是已经删掉的「只处理当前这张」按钮（点了没反应）。
+    // 现在给的是真实存在的路径：待处理/失败的项，点「开始批量处理」会重跑。
+    setStatus(
+      `${item.name} · ${itemStateText(item)}`,
+      0,
+      item.status === 'pending' || item.status === 'failed' ? '点「开始批量处理」会重跑这张' : '',
+    )
     setMetrics({
       ...baseMetrics(),
       识别结果: item.provider || (item.status === 'pending' ? '未处理' : '未识别'),
@@ -1199,8 +1244,10 @@ async function addFiles(files, { restored = false } = {}) {
   elements.selectedName.textContent = `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
   // 同步标记：用户主动选图 = 下次打开可以恢复（localStorage 是同步落盘，关浏览器也不丢）
   try { localStorage.setItem('lama-restore', '1') } catch { /* 忽略 */ }
-  // 选完图立即在后台准备所选模型（下载/读缓存/校验），
-  // 进度显示在第一屏的下载条里；点「开始批量处理」时模型已就绪
+  // 选完图立刻在后台准备模型（下载 / 读缓存 / 校验 / 建会话）。
+  // ⚠️ 保持尽早启动、不要为了别的目的往后挪：它可能要下 62MB，
+  // 挪到 saveSelectedFiles（写 IndexedDB）与 showItem（解码位图）之后，
+  // 等于把这些耗时都加在下载前面 —— 实测会把预热推迟好几秒，是反向优化。
   void warmUpModel()
   try {
     const persisted = await saveSelectedFiles(state.items.map(item => item.file))
