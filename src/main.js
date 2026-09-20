@@ -369,8 +369,17 @@ async function downloadChunk(chunk, sources, onProgress, externalSignal) {
           signal: controller.signal,
         })
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-        // 只接受 206：HF 返回 200 意味着整文件开始下发（198MB），必须立刻中止换源
-        if (response.status !== 206) throw new Error(`该源不支持断点续传（HTTP ${response.status}）`)
+        // 一般只接受 206。但有一个必须放行的例外：**分片式源从头整段下载**。
+        // 某些静态托管（实测 WorkBuddy 静态托管 / app.workbuddy.host）会忽略 Range 头，
+        // 直接返回 200 + 整个文件；而分片文件本身就是我们要的那一段，所以这个 200 是可用的。
+        // 判据必须同时满足两条，否则会误吞 HF 的整文件（那是 62MB/198MB）：
+        //   ① rangeOffset === 0 —— 只对「分片即整段」的源放行；HF 是整文件，偏移不为 0 的段绝不接受
+        //   ② have === 0 —— 只对从头下载放行；续传时对方不支持 Range，只能作废这一段
+        // 后面仍会校验 have === chunk.size，多收少收都会被拦下。
+        const selfContainedFromStart = rangeOffset === 0 && have === 0
+        if (response.status !== 206 && !(response.status === 200 && selfContainedFromStart)) {
+          throw new Error(`该源不支持断点续传（HTTP ${response.status}）`)
+        }
         const reader = response.body.getReader()
         while (true) {
           const { done, value } = await reader.read()
