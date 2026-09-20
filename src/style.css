@@ -7,6 +7,12 @@
      显式声明 100% 关掉它，让字号完全由 CSS 决定。 */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* 「一行字的高度」—— 整个界面从顶部再往下让一行的量。
+     取值来自实测：eyebrow 那行（13px、line-height: normal）在本机浏览器里
+     行盒高 18.5px，下移量就照这个数走，而不是凑一个整数。
+     注意 18.5px 是「行盒高度」（含 leading），不等于 13px 字号本身 ——
+     若将来改 eyebrow 字号或给它加 line-height，这个值要跟着重量。 */
+  --one-line: 18.5px;
 }
 
 * { box-sizing: border-box; }
@@ -30,8 +36,9 @@ body {
 .shell {
   width: min(980px, 100%);
   margin: 0 auto;
-  padding: 28px 16px 32px;
-  padding-top: max(28px, env(safe-area-inset-top));
+  /* 顶部 = 原有的 28px 留白 + 一行字（18.5px）= 46.5px，即整页从顶部下移一行。 */
+  padding: 46.5px 16px 32px;
+  padding-top: calc(max(28px, env(safe-area-inset-top)) + var(--one-line));
   padding-right: max(16px, env(safe-area-inset-right));
   padding-bottom: max(32px, env(safe-area-inset-bottom));
   padding-left: max(16px, env(safe-area-inset-left));
@@ -165,6 +172,9 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
    iPhone 17 / 17 Pro 横屏顶部有 20pt 安全区（前代是 0），所以横屏也要吃 env(top)。
    压缩后 model-option 仍有 ~64px 高、按钮 min-height 保持 50px，都在 44pt 触摸下限之上。 */
 @media (max-height: 500px) and (orientation: landscape) {
+  /* 横屏刻意不吃那「一行字」的下移量：iPhone 横屏可视高只有 390~402pt，
+     再让 18.5px 就会把「开始批量处理」推出底部 Home 指示条（此前实测只剩 11~16px 余量）。
+     竖屏下移、横屏不下移，是两种形态各自的最优解，不是遗漏。 */
   .shell { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
   header { padding: 4px 4px 6px; }
   h1 { margin: 4px 0 3px; font-size: 24px; }
@@ -175,11 +185,13 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
 }
 /* ===== iOS 27 Liquid Glass 适配 =====
    顶部栏会浮在网页内容之上做半透明淡化，实测 iPhone 17 Pro（iOS 27）首屏第一行被压得看不清。
-   整页下移两行让开它；class 由 main.js 按系统版本（≥27）添加，旧系统完全不受影响。
+   整页下移让开它（40px），另加全局的那一行字（--one-line），合计基线 +40px +18.5px；
+   class 由 main.js 按系统版本（≥27）添加，旧系统完全不受影响。
    放在文件最末，避免被上面的桌面/横屏媒体查询覆盖；只在竖屏应用（横屏工具栏位置不同，
    且纵向空间本就紧张）。先写纯 px 回退，再写 max()/env() 版本 —— 旧 WebKit 解析失败时
    整条声明会被丢弃，没有回退会让 padding 直接归零。 */
 @media (orientation: portrait) {
-  html.ios-liquid-glass .shell { padding-top: 68px; }
-  html.ios-liquid-glass .shell { padding-top: calc(max(28px, env(safe-area-inset-top)) + 40px); }
+  /* 68px = 原 28px 基线 + 40px Liquid Glass 让位 + 18.5px 一行字 */
+  html.ios-liquid-glass .shell { padding-top: 86.5px; }
+  html.ios-liquid-glass .shell { padding-top: calc(max(28px, env(safe-area-inset-top)) + 40px + var(--one-line)); }
 }
