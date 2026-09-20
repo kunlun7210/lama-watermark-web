@@ -1,14 +1,14 @@
 {
   "name": "iphone-lama-watermark-remover",
   "private": true,
-  "version": "0.10.1",
+  "version": "0.11.0",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/copy-ort.mjs",
     "prepare:model": "node scripts/prepare-model.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node scripts/verify-models.mjs && npm run build",
+    "test": "node scripts/verify-models.mjs && node scripts/verify-gemini.mjs && npm run build",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

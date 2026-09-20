@@ -1,0 +1,242 @@
+{
+  "Gemini_Generated_Image_2bjpwy2bjpwy2bjp.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2112,
+    "y": 1504,
+    "size": 96,
+    "alphaGain": 0.39,
+    "alphaResidual": 0.00553861820718408,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_2r8bmx2r8bmx2r8b.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.0601645496190781,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_55csau55csau55cs.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.08703355398818818,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_59x8xs59x8xs59x8 (1).png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.12372750489729571,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_59x8xs59x8xs59x8 (2).png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.12372750489729571,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_59x8xs59x8xs59x8.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.12372750489729571,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_5iw9f35iw9f35iw9.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2464,
+    "y": 1248,
+    "size": 96,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.03257298627003649,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_c0dimec0dimec0di.png": {
+    "status": "cleaned",
+    "method": "gemini-reverse-alpha",
+    "x": 2464,
+    "y": 1248,
+    "size": 96,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.0003871854283778518,
+    "actionSha256": "9df465b34630ef83d5adbc36ca4d05cfda149a15aad43f02ff3f3793540bdf89"
+  },
+  "Gemini_Generated_Image_dj2xzudj2xzudj2x.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2102,
+    "size": 96,
+    "alphaGain": 0.5500000000000002,
+    "alphaResidual": 0.01692986193640267,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_fzwijyfzwijyfzwi.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2112,
+    "y": 1504,
+    "size": 96,
+    "alphaGain": 0.9700000000000005,
+    "alphaResidual": 0.002459726748345724,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_mx1n52mx1n52mx1n.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2112,
+    "y": 1504,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.1481142463059031,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_nl3d9gnl3d9gnl3d.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.12959207543729862,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_osyb3vosyb3vosyb.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2112,
+    "y": 1504,
+    "size": 96,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.15820288960677573,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_ozrintozrintozri.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.13806671557162523,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_rnr28rnr28rnr28r.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 2112,
+    "y": 1504,
+    "size": 96,
+    "alphaGain": 1.9900000000000015,
+    "alphaResidual": 0.11982554103258676,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_t8zaxrt8zaxrt8za.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 0.37,
+    "alphaResidual": 0.001967484154274481,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "Gemini_Generated_Image_vldb3dvldb3dvldb.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1504,
+    "y": 2112,
+    "size": 96,
+    "alphaGain": 0.6300000000000002,
+    "alphaResidual": 0.004929252544627733,
+    "actionSha256": "e7f9fae06e85154eea3e903b38de674d28e4a9568707052de63344d1fa773d9c"
+  },
+  "clean_gemini_portrait_2r8bmx.png": {
+    "status": "not-found",
+    "method": "gemini-template",
+    "x": 1700,
+    "y": 2332,
+    "size": 48,
+    "alphaGain": null,
+    "alphaResidual": null,
+    "actionSha256": null
+  },
+  "clean_gemini_sample_1.png": {
+    "status": "not-found",
+    "method": "gemini-template",
+    "x": 752,
+    "y": 1060,
+    "size": 96,
+    "alphaGain": null,
+    "alphaResidual": null,
+    "actionSha256": null
+  },
+  "clean_gemini_sample_2.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 816,
+    "y": 1120,
+    "size": 48,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.9652542901088248,
+    "actionSha256": "20d83357afc8d7663931146995fe7b9ef0c63fdc5bdd4f16ce49d51fe576145a"
+  },
+  "clean_gemini_sample_3.png": {
+    "status": "not-found",
+    "method": "gemini-template",
+    "x": 1104,
+    "y": 804,
+    "size": 48,
+    "alphaGain": null,
+    "alphaResidual": null,
+    "actionSha256": null
+  },
+  "gemini_sample_1.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 816,
+    "y": 1120,
+    "size": 48,
+    "alphaGain": 0.35,
+    "alphaResidual": 0.08520123561833587,
+    "actionSha256": "20d83357afc8d7663931146995fe7b9ef0c63fdc5bdd4f16ce49d51fe576145a"
+  },
+  "gemini_sample_2.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 816,
+    "y": 1120,
+    "size": 48,
+    "alphaGain": 0.9500000000000005,
+    "alphaResidual": 0.17591720394114654,
+    "actionSha256": "20d83357afc8d7663931146995fe7b9ef0c63fdc5bdd4f16ce49d51fe576145a"
+  },
+  "gemini_sample_3.png": {
+    "status": "needs-inpaint",
+    "method": "gemini-lama",
+    "x": 1120,
+    "y": 816,
+    "size": 48,
+    "alphaGain": 1.1300000000000008,
+    "alphaResidual": 0.011789844344818659,
+    "actionSha256": "20d83357afc8d7663931146995fe7b9ef0c63fdc5bdd4f16ce49d51fe576145a"
+  }
+}

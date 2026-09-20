@@ -2,6 +2,7 @@ import * as ort from 'onnxruntime-web/wasm'
 import './style.css'
 import { createRuleEngine } from './rules.js'
 import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
+import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
 
 const APP_VERSION = __APP_VERSION__
@@ -698,17 +699,39 @@ function drawBitmap(canvas, bitmap) {
   canvas.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0)
 }
 
-/** 识别水印：读完像素立即释放大数组，只返回区域 */
+/**
+ * 识别水印：Gemini 走专用模板匹配，其余平台仍走规则引擎。
+ *
+ * 两条线必须同时跑 —— 一张图可能同时有 Gemini 和其他平台的水印，
+ * 识别到 Gemini 不能跳过豆包/即梦等规则（反之亦然）。
+ * Gemini 的返回分三种：not-found（不认识）、cleaned（反向 Alpha 直接还原成功）、
+ * needs-inpaint（识别到了但质量不足，改用异形蒙版交 LaMa）。
+ */
 async function detectRegions(canvas) {
   const width = canvas.width
   const height = canvas.height
   const context = canvas.getContext('2d', { willReadFrequently: true })
   const imageData = context.getImageData(0, 0, width, height)
   const rgba = imageData.data
+  const gemini = processGemini(rgba, width, height)
   const gray = grayFromRgb(rgba, width, height)
   const gray8 = grayFromRgb8(rgba, width, height)
   const engine = await getRuleEngine()
-  return engine.detect({ rgba, gray, gray8, width, height })
+  const regions = engine.detect({ rgba, gray, gray8, width, height })
+  if (gemini.status === 'needs-inpaint') regions.push(gemini.region)
+  return { regions, gemini }
+}
+
+/**
+ * 把 Gemini 反向 Alpha 还原出的像素块写回结果画布。
+ * patch 是 Float→sRGB 还原后的 RGBA（Alpha 通道沿用原图），尺寸恰为 size×size，
+ * 落点就是检测出的 (x, y)。写完即把 patch 置空释放，整块只占 size²×4 字节。
+ */
+function applyGeminiPatch(context, gemini) {
+  if (gemini.status !== 'cleaned' || !gemini.patch) return
+  const patch = context.createImageData(gemini.size, gemini.size)
+  patch.data.set(gemini.patch)
+  context.putImageData(patch, gemini.x, gemini.y)
 }
 
 /**
@@ -1026,41 +1049,57 @@ async function processItem(item) {
   item.progressText = '正在识别水印'
   renderQueue()
   const detected = await detectRegions(elements.source)
-  item.regions = detected.length
-  item.provider = detected.length ? [...new Set(detected.map(region => region.provider))].join('、') : ''
+  // 反向 Alpha 直接还原的结果不算"待修复区域"，但水印类型仍要计入 Gemini 这一处
+  const geminiDirect = detected.gemini.status === 'cleaned'
+  item.regions = detected.regions.length + (geminiDirect ? 1 : 0)
+  const providers = detected.regions.map(region => region.provider)
+  if (geminiDirect) providers.push('Gemini')
+  item.provider = providers.length ? [...new Set(providers)].join('、') : ''
 
   let inferMs = 0
-  if (!detected.length) {
+  if (!item.regions) {
     item.status = 'unchanged'
   } else {
-    item.progressText = '正在准备模型'
-    renderQueue()
-    const { session, loadMs, reused } = await getSession(model)
-    state.lastModelLoadedMs = reused ? 0 : loadMs
-    const regions = detected.map(region => expandRepairPadding(region, item.width, item.height))
-    for (let index = 0; index < regions.length; index++) {
-      const region = regions[index]
-      item.progressText = `正在修复 ${index + 1}/${regions.length} · ${region.provider}`
+    // 路径一：反向 Alpha 质量达标，直接还原，不需要 LaMa 推理
+    if (geminiDirect) {
+      item.progressText = '正在还原 Gemini 水印'
       renderQueue()
-      setStatus(`${item.name} · 第 ${index + 1}/${regions.length} 处 · ${region.provider}`, null, '页面短暂无响应属于正常现象')
       await yieldToUi()
-      const window_ = regionWindow(region, item.width, item.height)
-      const maskInWindow = regionMaskInWindow(region, window_)
-      const { image, mask } = buildInputs(targetContext.canvas, window_, maskInWindow)
-      const { feeds, tensors } = createFeeds(session, model, image, mask)
-      const started = performance.now()
-      const result = await Promise.race([
-        session.run(feeds),
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error('本张推理超过 120 秒未返回，通常是手机内存不足')),
-          INFER_TIMEOUT_MS,
-        )),
-      ])
-      inferMs += performance.now() - started
-      const outputTensor = result[session.outputNames[0]]
-      compositeRegion(targetContext.canvas, outputTensor.data, window_, maskInWindow)
-      tensors.forEach(tensor => tensor.dispose?.())
-      outputTensor.dispose?.()
+      applyGeminiPatch(targetContext, detected.gemini)
+      detected.gemini.patch = null
+    }
+    // 路径二：其余区域（含 Gemini 质量不足时生成的异形蒙版）走 LaMa 局部修复。
+    // 用独立 if 而非 else —— 同一张图上两种路径可能同时存在。
+    if (detected.regions.length) {
+      item.progressText = '正在准备模型'
+      renderQueue()
+      const { session, loadMs, reused } = await getSession(model)
+      state.lastModelLoadedMs = reused ? 0 : loadMs
+      const regions = detected.regions.map(region => expandRepairPadding(region, item.width, item.height))
+      for (let index = 0; index < regions.length; index++) {
+        const region = regions[index]
+        item.progressText = `正在修复 ${index + 1}/${regions.length} · ${region.provider}`
+        renderQueue()
+        setStatus(`${item.name} · 第 ${index + 1}/${regions.length} 处 · ${region.provider}`, null, '页面短暂无响应属于正常现象')
+        await yieldToUi()
+        const window_ = regionWindow(region, item.width, item.height)
+        const maskInWindow = regionMaskInWindow(region, window_)
+        const { image, mask } = buildInputs(targetContext.canvas, window_, maskInWindow)
+        const { feeds, tensors } = createFeeds(session, model, image, mask)
+        const started = performance.now()
+        const result = await Promise.race([
+          session.run(feeds),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error('本张推理超过 120 秒未返回，通常是手机内存不足')),
+            INFER_TIMEOUT_MS,
+          )),
+        ])
+        inferMs += performance.now() - started
+        const outputTensor = result[session.outputNames[0]]
+        compositeRegion(targetContext.canvas, outputTensor.data, window_, maskInWindow)
+        tensors.forEach(tensor => tensor.dispose?.())
+        outputTensor.dispose?.()
+      }
     }
     item.status = 'done'
   }
