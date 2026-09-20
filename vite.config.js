@@ -1,11 +1,18 @@
 import { defineConfig } from 'vite'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 // 构建版本：每次 build 变化。写入 dist/version.json 并注入 JS，
 // 页面启动时比对两者，不一致就自动刷新一次（拿到新 HTML/JS），
 // 避免端上「旧 HTML + 新 JS」的缓存混合态；Cache Storage 里的模型缓存不受刷新影响。
 const APP_VERSION = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
+
+// 界面上展示给用户的版本号与日期。
+// 语义版本以 package.json 为唯一真相源 —— 避免「改了代码忘了改页面上的版本号」。
+const APP_SEMVER = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+// 用本地日期而不是 UTC：用户在北京时间后半夜构建时，UTC 会退回前一天，显示出来就错了。
+const now = new Date()
+const BUILD_DATE = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`
 
 function versionPlugin() {
   let outDir = 'dist'
@@ -21,7 +28,11 @@ function versionPlugin() {
 
 export default defineConfig({
   base: './',
-  define: { __APP_VERSION__: JSON.stringify(APP_VERSION) },
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+    __APP_SEMVER__: JSON.stringify(APP_SEMVER),
+    __BUILD_DATE__: JSON.stringify(BUILD_DATE),
+  },
   plugins: [versionPlugin()],
   resolve: {
     // ORT 的默认入口里含 `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)`，

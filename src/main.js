@@ -62,6 +62,7 @@ const elements = {
   source: document.querySelector('#source'),
   result: document.querySelector('#result'),
   status: document.querySelector('#status'),
+  appVersion: document.querySelector('#app-version'),
   progress: document.querySelector('#progress'),
   progressLabel: document.querySelector('#progress-label'),
   metrics: document.querySelector('#metrics'),
@@ -1429,7 +1430,10 @@ async function restoreSelectedFiles() {
 }
 
 setMetrics(baseMetrics())
-// 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天
+// 版本号：语义版本取自 package.json，日期为构建日期（本地时区）—— 两者都由 vite define 注入，
+// 页面不再硬编码，避免「改了代码却忘了改页面上的版本号」。
+// 判空后再写：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失。
+if (elements.appVersion) elements.appVersion.textContent = `v${__APP_SEMVER__} · ${__BUILD_DATE__}`
 // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
 // 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——
 // 页脚文案已据此写成不依赖该结果的表述（评价第 8 条）。

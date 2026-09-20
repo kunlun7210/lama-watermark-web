@@ -37,7 +37,13 @@ body {
   padding-left: max(16px, env(safe-area-inset-left));
 }
 header { padding: 8px 4px 12px; }
+/* eyebrow 行：左侧是元信息，右侧是版本号。
+   用 flex + wrap —— 390pt 窄屏上两者挤不进一行时，版本号换到第二行，
+   而不是把左边的文案压缩或直接溢出（四机型审计会验这一点）。 */
+.eyebrow-row { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; }
 .eyebrow { color: #75d7b4; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
+/* 版本号：次级灰、等宽数字（tabular-nums），避免每次构建数字宽度跳动 */
+.app-version { color: #7b8ba3; font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 h1 { margin: 10px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
 header p, .footnote { color: #aab5c8; line-height: 1.65; }
 /* 平台说明行：字号小一号（16→14px），同时显式收掉浏览器默认的 1em 上下外边距。
