@@ -24,6 +24,10 @@ void (async () => {
 const MODEL_SIZE = 512
 const IMAGE_DB_NAME = 'lama-iphone-poc'
 const IMAGE_STORE = 'images'
+// v2 起新增 results：把处理结果也落盘，刷新后能直接还原「已完成」而不必重跑。
+// 用 onupgradeneeded 补建 store，老库里的 images 记录不受影响（升级是非破坏的）。
+const IMAGE_DB_VERSION = 2
+const RESULT_STORE = 'results'
 const RESTORE_LIMIT_BYTES = 200 * 1024 * 1024
 const RESTORE_LIMIT_COUNT = 40
 const INFER_TIMEOUT_MS = 120000
@@ -85,7 +89,8 @@ const elements = {
 
 const state = {
   items: [],
-  nextId: 1,
+  // 条目 id 由 newItemId() 生成稳定 UUID —— 原来自增序号那套已移除，
+  // 因为它刷新后会重新编号，导致恢复时与落盘的处理结果对不上。
   currentId: null,
   running: false,
   stopRequested: false,
@@ -1116,6 +1121,19 @@ async function processItem(item) {
   item.elapsed = `${((performance.now() - totalStarted) / 1000).toFixed(1)} 秒`
   item.inferSeconds = (inferMs / 1000).toFixed(1)
   item.metrics = displayMetrics(item)
+  // 结果落盘：刷新/重开后这一张直接还原成「已完成」，不必重跑。
+  // 「未识别 · 保持原图」同样落盘 —— 它的结论是"这张不用改"，重跑也只是再得出同样结论，
+  // 一并恢复才不会让用户以为那一张没处理过。
+  // 这里 await 是有意的：批量处理本来就在等，多花一次写盘换「刷新不白跑」很划算。
+  try {
+    const stored = await saveResultRecord(item)
+    item.persisted = stored.saved
+    item.persistReason = stored.reason
+  } catch (error) {
+    item.persisted = false
+    item.persistReason = ''
+    console.warn('处理结果未能写入本机存储', error)
+  }
   state.currentId = item.id
   renderQueue()
   return item
@@ -1192,6 +1210,9 @@ async function runBatch(items) {
           item.status = 'pending'
           item.error = null
           item.progressText = `内存不足，已降为 ${next} 线程重试；若仍失败，刷新页面即可稳定生效`
+          // 结局未定，先把旧结果清掉：pending 的条目不该挂着一份结果。
+          // 重试若成功会重新写盘，所以这里不会丢东西。
+          await deleteResultRecord(item.id)
           loopIndex-- // 重试当前张（抵消循环自增）
         } else {
           item.status = 'failed'
@@ -1199,6 +1220,9 @@ async function runBatch(items) {
             ? '设备内存不足。已记住降低线程数，请刷新页面后再试（建议同时切到 INT8 模型、关闭其他 Safari 标签页）'
             : friendlyError(item, error)
           failed++
+          // 这张之前可能成功过（换模型重跑、或用户重跑）。旧结果必须清掉，
+          // 否则刷新后被还原成失败之前的成功状态，界面与实际不符。
+          await deleteResultRecord(item.id)
           if (/120 秒|内存不足|推理超时/.test(item.error)) await releaseActiveSession()
         }
       }
@@ -1218,11 +1242,15 @@ async function runBatch(items) {
     void releaseWakeLock()
     const done = state.items.filter(entry => entry.status === 'done').length
     const unchanged = state.items.filter(entry => entry.status === 'unchanged').length
+    // 结果没写进本机存储的那些：用户会默认「关掉页面再打开结果还在」，
+    // 所以这件事必须说出来，不能只写在控制台（同 addFiles 里那条提示的理由）。
+    const unsaved = state.items.filter(entry => entry.blob && entry.persisted === false).length
     const totalSeconds = ((performance.now() - started) / 1000).toFixed(1)
     setStatus(
       state.stopRequested ? '已停止' : '批量处理完成',
       1,
-      `完成 ${done} · 未识别 ${unchanged}${failed ? ` · 失败 ${failed}` : ''} · 用时 ${totalSeconds} 秒`,
+      `完成 ${done} · 未识别 ${unchanged}${failed ? ` · 失败 ${failed}` : ''} · 用时 ${totalSeconds} 秒`
+        + (unsaved ? ` · ${unsaved} 张结果未能保存，刷新后需重跑` : ''),
     )
     renderQueue()
   }
@@ -1297,19 +1325,46 @@ function zipEntries(finished) {
 
 /* ---------------- 文件选择与缓存 ---------------- */
 
+/**
+ * 稳定的条目 id。
+ * ⚠️ 不能用原来那套会话内自增序号（state.nextId++）：刷新后条目会重新编号，
+ * 结果记录就对不上了。改用随机 UUID，并随批记录一起落盘，恢复时原样传回。
+ */
+function newItemId() {
+  return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+/** 从结果 blob 重建队列缩略图。objectURL 无法持久化，只能恢复时重算 */
+async function makeThumbnailFromBlob(blob) {
+  const bitmap = await createImageBitmap(blob)
+  try {
+    const width = 132
+    const height = Math.max(1, Math.round(bitmap.height * (width / bitmap.width)))
+    const thumb = document.createElement('canvas')
+    thumb.width = width
+    thumb.height = height
+    thumb.getContext('2d').drawImage(bitmap, 0, 0, width, height)
+    return await canvasBlob(thumb, 'image/jpeg')
+  } finally {
+    bitmap.close?.()
+  }
+}
+
 function openImageDatabase() {
   return new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) return reject(new Error('浏览器不支持 IndexedDB'))
-    const request = indexedDB.open(IMAGE_DB_NAME, 1)
+    const request = indexedDB.open(IMAGE_DB_NAME, IMAGE_DB_VERSION)
     request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(IMAGE_STORE)) request.result.createObjectStore(IMAGE_STORE, { keyPath: 'id' })
+      const database = request.result
+      if (!database.objectStoreNames.contains(IMAGE_STORE)) database.createObjectStore(IMAGE_STORE, { keyPath: 'id' })
+      if (!database.objectStoreNames.contains(RESULT_STORE)) database.createObjectStore(RESULT_STORE, { keyPath: 'id' })
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error || new Error('无法打开图片缓存'))
   })
 }
 
-async function saveSelectedFiles(files) {
+async function saveSelectedFiles(files, ids) {
   const total = files.reduce((sum, file) => sum + file.size, 0)
   if (files.length > RESTORE_LIMIT_COUNT || total > RESTORE_LIMIT_BYTES) return false
   const database = await openImageDatabase()
@@ -1319,6 +1374,9 @@ async function saveSelectedFiles(files) {
       transaction.objectStore(IMAGE_STORE).put({
         id: 'batch',
         savedAt: Date.now(),
+        // ids 与 files 一一对应，且是稳定 UUID。结果记录靠它关联，所以必须一起存 ——
+        // 只存文件的话，刷新后无从反查「这张图的结果是哪条」。
+        ids,
         files: files.map(file => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file })),
       })
       transaction.oncomplete = resolve
@@ -1338,21 +1396,30 @@ async function readSelectedFiles() {
       request.onsuccess = () => resolve(request.result || null)
       request.onerror = () => reject(request.error || new Error('图片恢复失败'))
     })
-    if (!record?.files?.length) return []
-    return record.files.map(entry => new File([entry.blob], entry.name, {
-      type: entry.type || entry.blob.type,
-      lastModified: entry.lastModified || Date.now(),
-    }))
+    if (!record?.files?.length) return { files: [], ids: [] }
+    return {
+      files: record.files.map(entry => new File([entry.blob], entry.name, {
+        type: entry.type || entry.blob.type,
+        lastModified: entry.lastModified || Date.now(),
+      })),
+      // v1 的老记录没有 ids（那时还没做结果恢复）。返回空数组让调用方回退到新生成的 id：
+      // 这类条目只是丢掉「结果恢复」，原图照常恢复、重跑即可，不该整体拒绝恢复。
+      ids: Array.isArray(record.ids) && record.ids.length === record.files.length ? record.ids : [],
+    }
   } finally { database.close() }
 }
 
-/** 删除持久化的图片列表（清空列表、恢复失败时调用），否则下次打开会再次恢复 */
+/**
+ * 删除持久化的任务与结果（清空列表、恢复失败时调用），否则下次打开会再次恢复。
+ * 两个 store 一起清：只清原图而留下结果，下次恢复的条目树与结果树就对不上了。
+ */
 async function deleteStoredFiles() {
   try {
     const database = await openImageDatabase()
     await new Promise((resolve, reject) => {
-      const transaction = database.transaction(IMAGE_STORE, 'readwrite')
+      const transaction = database.transaction([IMAGE_STORE, RESULT_STORE], 'readwrite')
       transaction.objectStore(IMAGE_STORE).delete('batch')
+      transaction.objectStore(RESULT_STORE).clear()
       transaction.oncomplete = resolve
       transaction.onerror = () => reject(transaction.error || new Error('清除图片缓存失败'))
       transaction.onabort = () => reject(transaction.error || new Error('清除图片缓存中止'))
@@ -1361,16 +1428,111 @@ async function deleteStoredFiles() {
   } catch (error) { console.warn('清除图片缓存失败', error) }
 }
 
-async function addFiles(files, { restored = false } = {}) {
+/* ---------------- 处理结果的持久化 ---------------- */
+
+/**
+ * 结果写盘的空间检查。
+ * 不用"结果总量不超过 N MB"这种静态阈值：配额是整个源共享的（模型缓存那 62MB 也算在里面），
+ * 静态阈值既可能过早放弃、也可能在配额已被别的东西吃掉时依然放行。
+ * 直接问浏览器还剩多少，留 10% 余量给浏览器自己的操作空间。
+ */
+async function hasRoomForResult(bytes) {
+  if (!navigator.storage?.estimate) return true
+  try {
+    const { usage = 0, quota = 0 } = await navigator.storage.estimate()
+    if (!quota) return true
+    if (usage + bytes < quota * 0.9) return true
+    console.warn(`本机存储余量不足（已用 ${(usage / 1048576).toFixed(0)}MB / 配额 ${(quota / 1048576).toFixed(0)}MB），本次不保留处理结果`)
+    return false
+  } catch { return true } // 问不到就当作有空间，不要因为探测失败而放弃恢复能力
+}
+
+/**
+ * 把一张的处理结果写盘，刷新后可原样还原。
+ * 只返回成败、不抛异常 —— 恢复能力是锦上添花，不能因为它让本已成功的处理变成红色失败。
+ */
+async function saveResultRecord(item) {
+  if (!item.blob) return { saved: false, reason: '' }
+  if (!await hasRoomForResult(item.blob.size)) {
+    return { saved: false, reason: '本机存储空间不足，本次不保留处理结果' }
+  }
+  const database = await openImageDatabase()
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(RESULT_STORE, 'readwrite')
+      transaction.objectStore(RESULT_STORE).put({
+        id: item.id,
+        savedAt: Date.now(),
+        status: item.status,
+        modelId: item.modelId,
+        outputBlob: item.blob,
+        outputExt: item.outputExt,
+        provider: item.provider,
+        regions: item.regions,
+        elapsed: item.elapsed,
+        inferSeconds: item.inferSeconds,
+        metrics: item.metrics,
+        width: item.width,
+        height: item.height,
+      })
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error || new Error('结果缓存失败'))
+      transaction.onabort = () => reject(transaction.error || new Error('结果缓存中止'))
+    })
+    return { saved: true, reason: '' }
+  } finally { database.close() }
+}
+
+/** 批量读回结果。没有记录的 id 自然缺席，由调用方跳过 */
+async function readResultRecords(ids) {
+  const wanted = ids.filter(Boolean)
+  if (!wanted.length) return new Map()
+  const database = await openImageDatabase()
+  try {
+    const transaction = database.transaction(RESULT_STORE, 'readonly')
+    const store = transaction.objectStore(RESULT_STORE)
+    const records = await Promise.all(wanted.map(id => new Promise((resolve, reject) => {
+      const request = store.get(id)
+      request.onsuccess = () => resolve(request.result || null)
+      request.onerror = () => reject(request.error || new Error('结果恢复失败'))
+    })))
+    return new Map(records.filter(record => record?.outputBlob).map(record => [record.id, record]))
+  } finally { database.close() }
+}
+
+/**
+ * 删掉一张的结果。
+ * 重跑有可能变成「失败」或「未识别」—— 此时若不删旧记录，下次刷新会把它还原成重跑前的
+ * 成功状态，界面与实际不符（而且用户会以为那张处理过了）。
+ */
+async function deleteResultRecord(id) {
+  try {
+    const database = await openImageDatabase()
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(RESULT_STORE, 'readwrite')
+      transaction.objectStore(RESULT_STORE).delete(id)
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error || new Error('结果清除失败'))
+      transaction.onabort = () => reject(transaction.error || new Error('结果清除中止'))
+    })
+    database.close()
+  } catch (error) { console.warn('清除结果缓存失败', error) }
+}
+
+async function addFiles(files, { restored = false, ids = [] } = {}) {
   const accepted = files.filter(file => file && file.size > 0)
   if (!accepted.length) return
-  for (const file of accepted) {
-    const item = { id: state.nextId++, file, name: file.name, restored, status: 'pending', thumbUrl: null, url: null, blob: null }
+  for (let index = 0; index < accepted.length; index++) {
+    const file = accepted[index]
+    // 恢复时沿用落盘的 id，结果记录才挂得上；用户新选图则现生成一个。
+    const item = { id: ids[index] || newItemId(), file, name: file.name, restored, status: 'pending', thumbUrl: null, url: null, blob: null }
     state.items.push(item)
   }
   const latest = state.items[state.items.length - 1]
   elements.selectedName.hidden = false
-  elements.selectedName.textContent = `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
+  elements.selectedName.textContent = restored
+    ? `已恢复上次的 ${accepted.length} 张图片，列表共 ${state.items.length} 张`
+    : `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
   // 同步标记：用户主动选图 = 下次打开可以恢复（localStorage 是同步落盘，关浏览器也不丢）
   try { localStorage.setItem('lama-restore', '1') } catch { /* 忽略 */ }
   // 选完图立刻在后台准备模型（下载 / 读缓存 / 校验 / 建会话）。
@@ -1379,7 +1541,7 @@ async function addFiles(files, { restored = false } = {}) {
   // 等于把这些耗时都加在下载前面 —— 实测会把预热推迟好几秒，是反向优化。
   void warmUpModel()
   try {
-    const persisted = await saveSelectedFiles(state.items.map(item => item.file))
+    const persisted = await saveSelectedFiles(state.items.map(item => item.file), state.items.map(item => item.id))
     if (!persisted) {
       // 别只写 console —— 用户会默认「关掉页面再打开一定能恢复」（评价第 7 条）。
       // 写在选图信息那一行：不占用状态文字，也不会被模型下载进度覆盖。
@@ -1471,7 +1633,7 @@ async function restoreSelectedFiles() {
   try {
     // 用户清空过（同步标记）就不恢复，即使 IndexedDB 删除因竞态没完成
     if (localStorage.getItem('lama-restore') === '0') return
-    const files = await readSelectedFiles()
+    const { files, ids } = await readSelectedFiles()
     if (!files.length) return
     // 上次缓存的文件可能已被系统清理成空壳：先试解码第一张，坏掉就整体丢弃，
     // 免得列表里全是「解码失败」的死条目。
@@ -1483,8 +1645,48 @@ async function restoreSelectedFiles() {
     } catch {
       throw new Error('缓存文件已损坏')
     }
-    await addFiles(files, { restored: true })
-    setStatus(`已恢复上次的 ${files.length} 张图片`, 0, '点「开始批量处理」继续')
+    await addFiles(files, { restored: true, ids })
+    // 还原已完成的结果：把落盘的输出直接画回来，这些图不必重跑。
+    const records = await readResultRecords(state.items.map(item => item.id))
+    let completed = 0
+    for (const item of state.items) {
+      const record = records.get(item.id)
+      if (!record) continue
+      item.status = record.status === 'done' ? 'done' : 'unchanged'
+      item.modelId = record.modelId
+      item.blob = record.outputBlob
+      item.url = URL.createObjectURL(record.outputBlob)
+      item.outputExt = record.outputExt
+      item.provider = record.provider
+      item.regions = record.regions
+      item.elapsed = record.elapsed
+      item.inferSeconds = record.inferSeconds
+      item.metrics = record.metrics
+      item.width = record.width
+      item.height = record.height
+      item.persisted = true
+      try {
+        // 缩略图是 objectURL，无法持久化，只能从结果 blob 重算。
+        // 它失败不该连累结果本身 —— 缩略图只是列表里的小方块。
+        const thumb = await makeThumbnailFromBlob(record.outputBlob)
+        item.thumbUrl = URL.createObjectURL(thumb)
+      } catch { /* 忽略 */ }
+      completed++
+    }
+    // 显示最近一张有结果的：否则预览区停在第一张的原图上，看起来像什么都没恢复。
+    const lastDone = [...state.items].reverse().find(item => item.blob)
+    if (lastDone) await showItem(lastDone.id)
+    // 「其中 X 张已有结果」写进选图信息那一行，而不是状态文字：
+    // 状态文字紧接着就会被模型预热的「正在初始化…」覆盖掉，用户基本看不到。
+    // 这和上面「不启用自动恢复」的提示是同一个理由 —— 见 addFiles 里的注释。
+    if (completed) elements.selectedName.textContent += ` · 其中 ${completed} 张已有结果`
+    setStatus(
+      `已恢复上次的 ${files.length} 张图片`,
+      completed / files.length,
+      completed
+        ? `其中 ${completed} 张已有结果，可直接查看或下载；剩余的可继续处理`
+        : '点「开始批量处理」继续',
+    )
   } catch (error) {
     console.warn('无法恢复上次图片', error)
     try { localStorage.setItem('lama-restore', '0') } catch { /* 忽略 */ }

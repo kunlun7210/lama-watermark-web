@@ -7,8 +7,12 @@
  *
  * 阶段 A：选 N 张图 → 跑批 → 统计 已处理 / 保持原图 / 失败，并检查状态区只显示
  *         「识别结果」「总耗时」两格。
- * 阶段 B：单独选 3 张、跑完至少 1 张后刷新页面，记录恢复到的队列长度与是否存在
- *         已完成结果 —— 用来确认刷新后到底恢复了什么（本仓库只持久化源文件列表）。
+ * 阶段 B：单独选 3 张、整批跑完后刷新页面，断言恢复到的条目数、已完成数、
+ *         缩略图、预览画布、选图信息提示都回到刷新前的状态。
+ *         本仓库自 v0.11.2 起把处理结果连同原图一起持久化，所以"已完成"必须被还原，
+ *         而不是回到待处理。三个辅助字段（thumbCount / doneTexts / previewPainted）
+ *         就是用来区分"状态标记回来了"和"结果数据真的回来了"。
+ * 阶段 C：清空列表后刷新，断言不再恢复（回归「清空」这条路径没被结果持久化破坏）。
  */
 import { writeFile } from 'node:fs/promises'
 import { readdir } from 'node:fs/promises'
@@ -98,9 +102,25 @@ const stateExpression = `(() => {
     pending: items.filter(li => /等待处理/.test(text(li.querySelector('.q-state')))).length,
     status: text(document.querySelector('#status')),
     summary: text(document.querySelector('#queue-summary')),
+    selectedName: text(document.querySelector('#selected-name')),
     running: !document.querySelector('#stop')?.hidden,
     runDisabled: document.querySelector('#run-batch')?.disabled,
     isolated: crossOriginIsolated,
+    // 结果是否真的恢复回来了，靠这三个字段判定（光看状态不够）：
+    // 缩略图只可能来自「结果 blob 重算」，q-state 文本里的 provider/区域/耗时
+    // 只可能来自结果记录，预览画布非透明说明结果确实画上去了。
+    thumbCount: items.filter(li => /^blob:/.test(li.querySelector('img')?.getAttribute('src') || '')).length,
+    doneTexts: items.filter(li => /已去除/.test(text(li.querySelector('.q-state')))).length,
+    previewPainted: (() => {
+      const canvas = document.querySelector('#result')
+      if (!canvas?.width) return false
+      try {
+        // 只取中心一个像素：整幅 getImageData 在大图上很慢
+        const data = canvas.getContext('2d')
+          .getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data
+        return data[3] > 0
+      } catch { return null }
+    })(),
   }
 })()`
 const readState = () => evaluate(stateExpression)
@@ -166,35 +186,83 @@ const metrics = await evaluate(`(() => {
 })()`)
 console.log('  状态区: ' + JSON.stringify(metrics))
 
-/* ---------- 阶段 B：刷新恢复 ---------- */
+/* ---------- 阶段 B：刷新恢复（强断言，不只是打印） ---------- */
 console.log('')
-console.log('=== 阶段 B：刷新恢复（先跑出至少 1 张已完成）===')
+console.log('=== 阶段 B：刷新后恢复已完成结果 ===')
 await clearQueue()
 await setFiles(phaseB)
 await waitFor(readState, value => value.queue === phaseB.length && !value.runDisabled, 180000, '阶段B 选择图片')
 await evaluate(`document.querySelector('#run-batch').click(); true`)
-const beforeReload = await waitFor(readState, value => value.done >= 1, 900000, '至少一张完成')
-console.log('  刷新前: ' + JSON.stringify({ queue: beforeReload.queue, done: beforeReload.done, unchanged: beforeReload.unchanged }))
+// 必须等整批跑完再刷新：跑一半就刷新会打断在途那张，done 数不可预期、断言失去基准。
+const beforeReload = await waitFor(
+  readState,
+  value => !value.running && value.done + value.unchanged + value.failed === phaseB.length,
+  1800000,
+  '阶段B 批量处理完成',
+)
+console.log('  刷新前: ' + JSON.stringify({
+  queue: beforeReload.queue,
+  done: beforeReload.done,
+  unchanged: beforeReload.unchanged,
+  failed: beforeReload.failed,
+  缩略图: beforeReload.thumbCount,
+}))
 
 await send('Page.reload', { ignoreCache: false })
 await waitFor(readState, value => value.ready === 'complete', 60000, '页面重载')
-const afterReload = await waitFor(
-  readState,
-  value => value.queue > 0,
-  120000,
-  '恢复上次的图片',
-).catch(async () => await readState())
+const afterReload = await waitFor(readState, value => value.queue > 0, 120000, '恢复上次的图片')
 console.log('  刷新后: ' + JSON.stringify({
   queue: afterReload.queue,
   done: afterReload.done,
   unchanged: afterReload.unchanged,
   pending: afterReload.pending,
-  可运行: !afterReload.runDisabled,
+  failed: afterReload.failed,
+  缩略图: afterReload.thumbCount,
+  已去除文本: afterReload.doneTexts,
+  预览已画: afterReload.previewPainted,
+  选图信息: afterReload.selectedName,
   状态: afterReload.status,
 }))
+
+const checks = [
+  ['刷新后条目数不变', afterReload.queue === beforeReload.queue],
+  [`已完成数被恢复（${beforeReload.done} 张）`, afterReload.done === beforeReload.done && afterReload.done >= 1],
+  ['保持原图数被恢复', afterReload.unchanged === beforeReload.unchanged],
+  // 失败项不落盘结果，恢复后回到「等待处理」是设计使然（本来就该重跑），
+  // 所以期望值不是 0 而是「等于刷新前的失败数」。
+  ['除失败项外没有条目被打回待处理', afterReload.pending === beforeReload.failed],
+  ['缩略图已从结果重建', afterReload.thumbCount === afterReload.done + afterReload.unchanged],
+  ['队列描述含「已去除」（provider/区域/耗时都恢复）', afterReload.doneTexts === afterReload.done],
+  ['预览区已画回结果', afterReload.previewPainted === true],
+  // 断言「选图信息」那一行，而不是状态行：状态行紧接着会被模型预热的
+  // 「正在初始化 INT8 · 62MB」覆盖，测它就等于测一个用户看不见的瞬间。
+  ['选图信息行提示已有结果', /其中 \d+ 张已有结果/.test(afterReload.selectedName)],
+]
+console.log('  --- 断言 ---')
+let failedChecks = 0
+for (const [label, ok] of checks) {
+  console.log('    ' + (ok ? '✓' : '✗') + ' ' + label)
+  if (!ok) failedChecks++
+}
+
+/* ---------- 阶段 C：清空后不应再恢复 ---------- */
+console.log('')
+console.log('=== 阶段 C：清空列表后刷新不应再恢复 ===')
+await clearQueue()
+await send('Page.reload', { ignoreCache: false })
+await waitFor(readState, value => value.ready === 'complete', 60000, '页面重载')
+await sleep(3000) // 留出恢复流程的时间：若它错误地恢复了，这里就能看见
+const afterClear = await readState()
+const clearOk = afterClear.queue === 0
+console.log('  ' + (clearOk ? '✓' : '✗') + ` 清空后刷新仍为空列表（queue=${afterClear.queue}）`)
+if (!clearOk) failedChecks++
+
+console.log('')
 console.log('  浏览器错误: ' + JSON.stringify(browserErrors))
 
 const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
 await writeFile('/tmp/gemini-batch-result.png', Buffer.from(shot.data, 'base64'))
 console.log('  截图: /tmp/gemini-batch-result.png')
 socket.close()
+if (failedChecks) throw new Error('刷新恢复验收有 ' + failedChecks + ' 项未通过')
+if (browserErrors.length) throw new Error('存在浏览器错误')

@@ -12,7 +12,7 @@ import { writeFile } from 'node:fs/promises'
 
 const port = Number(process.env.CDP_PORT || 9223)
 const targetPrefix = process.env.TEST_URL_PREFIX || 'http://localhost:5173'
-const EXPECT_VERSION = process.env.EXPECT_VERSION || 'v0.11.1 · 2026.09.20'
+const EXPECT_VERSION = process.env.EXPECT_VERSION || 'v0.11.2 · 2026.09.20'
 const EXPECT_MODEL_LABEL = process.env.EXPECT_MODEL_LABEL || 'INT8 · 62MB'
 // 每个平台取 1 张，验证「水印类型」仍能正确识别出该平台
 const SAMPLES = (process.env.PLATFORM_SAMPLES || '').split('||').filter(Boolean)
