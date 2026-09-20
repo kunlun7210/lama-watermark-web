@@ -61,6 +61,7 @@ const elements = {
   clear: document.querySelector('#clear'),
   source: document.querySelector('#source'),
   result: document.querySelector('#result'),
+  previewGrid: document.querySelector('#preview-grid'),
   status: document.querySelector('#status'),
   appVersion: document.querySelector('#app-version'),
   progress: document.querySelector('#progress'),
@@ -167,6 +168,16 @@ function setMetrics(values) {
   // 没有指标可显示时整块收起来 —— 未选图时只有「识别结果 未处理」这类空信息，
   // 留着会在第一屏占掉一片位置
   elements.metrics.hidden = entries.length === 0
+}
+
+/**
+ * 未选图时预览区只留两个标题条。
+ * 空的 canvas 是纯黑方块：占掉大半屏、零信息量，还把页脚的使用说明推到要滚动才看得见。
+ * 队列里有图就展开（选图后、恢复缓存后），清空则收回。
+ */
+function updatePreviewVisibility() {
+  if (!elements.previewGrid) return
+  elements.previewGrid.dataset.empty = state.items.length ? 'false' : 'true'
 }
 
 /**
@@ -1338,6 +1349,7 @@ async function addFiles(files, { restored = false } = {}) {
   } catch (error) { console.warn('无法缓存所选图片', error) }
   await showItem(latest.id)
   renderQueue()
+  updatePreviewVisibility()
 }
 
 /** 预热当前选中的模型：未缓存就开始下载（进度在顶部下载条），已缓存则直接建会话 */
@@ -1413,6 +1425,7 @@ elements.clear.addEventListener('click', async () => {
   setStatus('等待选择图片', 0)
   setMetrics({})
   renderQueue()
+  updatePreviewVisibility()
 })
 
 async function restoreSelectedFiles() {
@@ -1443,6 +1456,7 @@ async function restoreSelectedFiles() {
 
 setMetrics({})
 logThreadCount()
+updatePreviewVisibility()
 // iOS 27 的 Liquid Glass 顶部栏会浮在网页内容之上做半透明淡化 ——
 // 实测 iPhone 17 Pro（iOS 27）首屏第一行「本机浏览器推理 · 图片不会上传」被压得看不清。
 // 这里按**系统版本**给整页加一段上边距让开它，旧系统完全不受影响。

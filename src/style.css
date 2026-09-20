@@ -137,6 +137,9 @@ progress::-moz-progress-bar { background: #70e0b6; border-radius: 999px; }
 .metrics dt { color: #8f9bb0; font-size: 12px; }
 .metrics dd { margin: 4px 0 0; font-weight: 700; }
 .preview-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
+/* 未选图时预览区只留两个标题条 —— 空的 canvas 是纯黑方块，占掉大半屏却没有任何信息，
+   还把页脚的使用说明推到需要滚动的位置。选图后由 main.js 把 data-empty 置为 false。 */
+.preview-grid[data-empty="true"] canvas { display: none; }
 figure { margin: 0; overflow: hidden; }
 figcaption { padding: 13px 15px; color: #bac5d6; border-bottom: 1px solid #2b3850; }
 canvas { display: block; width: 100%; height: auto; background: #060a10; }
