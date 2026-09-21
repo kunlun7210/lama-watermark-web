@@ -8,11 +8,15 @@
  * 2) 完整流水线跑各平台样张（非 Gemini），确认水印类型仍被正确识别 ——
  *    证明 Gemini 检测与既有规则并行、且未干扰它们。
  */
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 
 const port = Number(process.env.CDP_PORT || 9223)
 const targetPrefix = process.env.TEST_URL_PREFIX || 'http://localhost:5173'
-const EXPECT_VERSION = process.env.EXPECT_VERSION || 'v0.12.0 · 2026.09.20'
+// 版本号只锁语义版本，日期用格式校验 —— 构建日期随「哪天构建」变化，
+// 把它写死会让断言在第二天必然失败（假红），那不是被测代码的问题。
+const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+const EXPECT_SEMVER = process.env.EXPECT_SEMVER || `v${pkg.version}`
+const VERSION_PATTERN = new RegExp(`^${EXPECT_SEMVER.replace(/[.]/g, '\\.')} · \\d{4}\\.\\d{2}\\.\\d{2}$`)
 const EXPECT_MODEL_LABEL = process.env.EXPECT_MODEL_LABEL || 'INT8 · 62MB'
 // 每个平台取 1 张，验证「水印类型」仍能正确识别出该平台
 const SAMPLES = (process.env.PLATFORM_SAMPLES || '').split('||').filter(Boolean)
@@ -105,7 +109,7 @@ const ui = await evaluate(`(() => {
 const checks = [
   ['视口 402×874', ui.viewport[0] === 402],
   ['iOS 27 Liquid Glass 类', ui.iosLiquidGlass === true],
-  ['版本号 ' + EXPECT_VERSION, ui.version === EXPECT_VERSION],
+  ['版本号 ' + EXPECT_SEMVER + ' · YYYY.MM.DD', VERSION_PATTERN.test(ui.version)],
   ['模型摘要行 = 本地 AI 模型 ' + EXPECT_MODEL_LABEL, ui.modelSummaryLabel === '本地 AI 模型' && ui.modelSummaryValue === EXPECT_MODEL_LABEL],
   ['顶部文案含 Gemini', ui.header.includes('Gemini')],
   ['底部文案含 Gemini 专用还原说明', ui.geminiInFooter],
