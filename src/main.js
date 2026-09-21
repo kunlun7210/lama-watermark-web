@@ -1525,7 +1525,10 @@ async function addFiles(files, { restored = false, ids = [] } = {}) {
   // ⚠️ 保持尽早启动、不要为了别的目的往后挪：它可能要下 62MB，
   // 挪到 saveSelectedFiles（写 IndexedDB）与 showItem（解码位图）之后，
   // 等于把这些耗时都加在下载前面 —— 实测会把预热推迟好几秒，是反向优化。
-  void warmUpModel()
+  // ⚠️ 但**恢复路径不在这里预热**：整批都已完成时用户只是回来看结果，
+  // 为此下载 62MB 或建一次 WASM 会话纯属浪费。确有待处理任务时，
+  // 由 restoreSelectedFiles 在读完结果记录之后补一次预热。
+  if (!restored) void warmUpModel()
   try {
     const persisted = await saveSelectedFiles(state.items.map(item => item.file), state.items.map(item => item.id))
     if (!persisted) {
@@ -1662,6 +1665,10 @@ async function restoreSelectedFiles() {
     // 显示最近一张有结果的：否则预览区停在第一张的原图上，看起来像什么都没恢复。
     const lastDone = [...state.items].reverse().find(item => item.blob)
     if (lastDone) await showItem(lastDone.id)
+    // 只有在确实还有待处理的图时，才在后台准备模型。
+    // 整批都已完成（用户只是回来看结果 / 下载）时不预热 —— 那时既不必建 WASM 会话，
+    // 更不该为一个"已完成"的批次去重新下载 62MB。
+    if (state.items.some(item => item.status === 'pending')) void warmUpModel()
     // 「其中 X 张已有结果」写进选图信息那一行，而不是状态文字：
     // 状态文字紧接着就会被模型预热的「正在初始化…」覆盖掉，用户基本看不到。
     // 这和上面「不启用自动恢复」的提示是同一个理由 —— 见 addFiles 里的注释。
