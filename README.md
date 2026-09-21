@@ -4,7 +4,8 @@
 
 - 在线版（GitHub Pages，随 `main` 自动部署）：<https://kunlun7210.github.io/lama-watermark-web/>
 - 在线版（托管站点）：<https://lama-watermark.app.workbuddy.host/>
-- 当前版本：**v0.14.0**（页面右上角显示语义版本与构建日期，可用来确认 Safari 是否已更新到最新部署）
+- 版本号显示在页面右上角（语义版本 + 构建日期，可用来确认 Safari 是否已更新到最新部署）。
+  **唯一真相源是 `package.json`**，由 vite 构建时注入 —— 本文件不重复维护版本号，避免发版时漏改。
 
 识别规则与 Mac 版 **Remove Watermark（WatermarkBatchLite）完全同源**：本仓库把 Mac 版的 Python 检测器逐条移植为前端 JS，几何、锚点、阈值、位图模板保持一致。
 
