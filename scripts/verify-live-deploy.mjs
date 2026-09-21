@@ -30,8 +30,10 @@ const localVersion = JSON.parse(await readFile(join(distDir, 'version.json'), 'u
 
 let failed = 0
 const checks = []
+// 立即打印：后面一旦有步骤抛错，前面已经拿到的证据不会一起丢掉
 const check = (label, ok, extra = '') => {
   checks.push([label, ok, extra])
+  console.log(`  ${ok ? '✓' : '✗'} ${label}${extra ? ` — ${extra}` : ''}`)
   if (!ok) failed++
 }
 
@@ -101,8 +103,16 @@ try {
   })
 
   await page.goto(`${live}/`, { waitUntil: 'load', timeout: 180000 })
-  await page.reload({ waitUntil: 'load', timeout: 180000 })
-  await page.waitForTimeout(2500)
+  // ⚠️ 这里**不要**主动 reload：GitHub Pages 不执行仓库里的 _headers，跨源隔离要靠
+  // coi-serviceworker 注册后自行 reload 一次才能生效。我们再 reload 一次就会与它撞车
+  // （实测报 net::ERR_ABORTED / frame was detached）。改为轮询等隔离生效。
+  let isolated = false
+  for (let attempt = 0; attempt < 40; attempt++) {
+    isolated = await page.evaluate(() => crossOriginIsolated).catch(() => false)
+    if (isolated) break
+    await page.waitForTimeout(1000)
+  }
+  await page.waitForTimeout(2000)
 
   const initial = await page.evaluate(() => ({
     url: location.href,
