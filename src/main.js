@@ -66,6 +66,7 @@ const MODELS = {
 const elements = {
   file: document.querySelector('#file-input'),
   selectedName: document.querySelector('#selected-name'),
+  batchHint: document.querySelector('#batch-hint'),
   runBatch: document.querySelector('#run-batch'),
   stop: document.querySelector('#stop'),
   saveAlbum: document.querySelector('#save-album'),
@@ -131,6 +132,11 @@ const ortBase = new URL('ort/', assetBase).href
  * 这反而是好事 —— 重建是「真正的初始化」，不再有「改了数字但线程池没重建」的陷阱。
  */
 const LEGACY_THREAD_PREF_KEY = 'lama-threads'
+// 每张图的实测耗时会按模型分别记在这里，供「预计时间」估算使用。
+// ⚠️ 前缀按本仓既有约定用 `lama-`（与 lama-restore 一致），不是参考仓库的 `lama-next-`：
+// 两站同源（同一 GitHub Pages 域），若共用同一个键，任何一站的耗时都会写进另一站的估算里 ——
+// 两套流水线各自的真实耗时不该互相污染。
+const TIMING_KEY_PREFIX = 'lama-seconds-'
 
 // 旧版会把一次偶发 OOM 永久写进 localStorage，导致设备以后一直停在 1/2 线程。
 // Worker 现在可以当场重建，永久偏好已无必要；启动时清掉历史遗留值。
@@ -147,6 +153,43 @@ let currentThreads = preferredThreads()
 
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
+
+/*
+ * ↓↓↓ 预计时间：以下三个函数**逐字节**移植自参考实现
+ *     lama-watermark-web-next @ 82a737f（src/main.js 的 timingSeconds / rememberTiming / updateBatchHint）。
+ *
+ * 为什么要照抄而不是自己写：估算规则里全是细节 —— 每张秒数用指数平滑、<60 秒说「秒」、
+ * ≥60 秒向上取整说「分钟」、张数为 0 时隐藏、文案里的空格与全角分号位置……
+ * 任何一处走样都会和用户已经习惯的那个版本对不上（同一台设备上两个站显示不同数字＝像 bug）。
+ * scripts/verify-batch-estimate.mjs 会对这三个函数做**逐字节**比对与行为矩阵比对，防止后续被改歪。
+ *
+ * 与参考实现唯一的差异：TIMING_KEY_PREFIX 的取值（见上面的说明），函数体一字未动。
+ */
+function timingSeconds(modelId) {
+  const fallback = modelId === 'fp32' ? 40 : 16
+  try {
+    const value = Number(localStorage.getItem(`${TIMING_KEY_PREFIX}${modelId}`))
+    return Number.isFinite(value) && value > 0 ? value : fallback
+  } catch { return fallback }
+}
+
+function rememberTiming(modelId, seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return
+  const smoothed = timingSeconds(modelId) * 0.65 + seconds * 0.35
+  try { localStorage.setItem(`${TIMING_KEY_PREFIX}${modelId}`, smoothed.toFixed(2)) } catch { /* 忽略 */ }
+}
+
+function updateBatchHint(count = state.items.filter(item => needsProcessing(item)).length) {
+  if (!elements.batchHint || count <= 0) {
+    if (elements.batchHint) elements.batchHint.hidden = true
+    return
+  }
+  const seconds = Math.max(1, Math.round(timingSeconds(selectedModel().id) * count))
+  const text = seconds >= 60 ? `约 ${Math.ceil(seconds / 60)} 分钟` : `约 ${seconds} 秒`
+  elements.batchHint.textContent = `${count} 张预计 ${text}；请保持页面在前台，每完成一张会立即保存。`
+  elements.batchHint.hidden = false
+}
+/* ↑↑↑ 预计时间：移植段结束（以下为本仓原有实现） */
 
 /**
  * 让界面有机会先画出状态文字，再去做会阻塞主线程的推理。
@@ -1207,6 +1250,7 @@ async function runBatch(items) {
       index++
       const fraction = (index - 1) / items.length
       setStatus(`第 ${index}/${items.length} 张 · ${item.name}`, fraction, '逐张处理中，请保持 Safari 在前台')
+      const itemStarted = performance.now()
       try {
         // OOM 重试交给 runWithOomFallback：判定「到底是不是 WASM 内存溢出」和
         // 「4 → 2 → 1 怎么降」都由它负责，主流程只提供 run / 重建 / 提示三件事。
@@ -1218,6 +1262,7 @@ async function runBatch(items) {
             await deleteResultRecord(item.id)
             await processItem(item)
             item.progressText = ''
+            rememberTiming(selectedModel().id, (performance.now() - itemStarted) / 1000)
           },
           getThreads: () => currentThreads,
           setThreads: next => {
@@ -1257,6 +1302,7 @@ async function runBatch(items) {
       )
       // 让出主线程，避免长时间占用
       await new Promise(resolve => setTimeout(resolve, 0))
+      updateBatchHint(Math.max(0, items.length - index))
     }
   } finally {
     state.running = false
@@ -1274,6 +1320,7 @@ async function runBatch(items) {
       `完成 ${done} · 未识别 ${unchanged}${failed ? ` · 失败 ${failed}` : ''} · 用时 ${totalSeconds} 秒`
         + (unsaved ? ` · ${unsaved} 张结果未能保存，刷新后需重跑` : ''),
     )
+    updateBatchHint(0)
     renderQueue()
   }
 }
@@ -1639,6 +1686,7 @@ async function addFiles(files, { restored = false, ids = [] } = {}) {
   } catch (error) { console.warn('无法缓存所选图片', error) }
   if (latest) await showItem(latest.id)
   renderQueue()
+  updateBatchHint()
   updatePreviewVisibility()
 }
 
@@ -1682,6 +1730,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   setStatus('模型已切换', 0, '再次「开始批量处理」会用新模型重跑')
   setMetrics(displayMetrics(currentItem()))
   renderQueue()
+  updateBatchHint()
   void refreshCacheTags()
   if (state.items.length) void warmUpModel() // 已选图时切模型，立刻预热新模型
 }))
@@ -1715,6 +1764,7 @@ elements.clear.addEventListener('click', async () => {
   setStatus('等待选择图片', 0)
   setMetrics({})
   renderQueue()
+  updateBatchHint(0)
   updatePreviewVisibility()
 })
 
@@ -1764,6 +1814,7 @@ async function restoreSelectedFiles() {
       } catch { /* 忽略 */ }
       completed++
     }
+    updateBatchHint()
     // 显示最近一张有结果的：否则预览区停在第一张的原图上，看起来像什么都没恢复。
     const lastDone = [...state.items].reverse().find(item => item.blob)
     if (lastDone) await showItem(lastDone.id)

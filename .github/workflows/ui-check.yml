@@ -72,6 +72,8 @@ jobs:
             node scripts/browser-boundary-check.mjs
           CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-stale-entry-check.mjs
+          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+            node scripts/browser-estimate-check.mjs
 
       - name: 确认浏览器测试夹具未残留
         run: |

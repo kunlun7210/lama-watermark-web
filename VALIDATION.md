@@ -2,7 +2,7 @@
 
 本文件记录**已经实测过**的结论与依据。原则：只写跑过的数据，未验证的进最后一节明说。
 
-日期：2026-09-21 ／ 版本：以 `package.json` 为准（本文件数据覆盖 v0.11.2 – v0.17.1）
+日期：2026-09-21 ／ 版本：以 `package.json` 为准（本文件数据覆盖 v0.11.2 – v0.17.2）
 
 ## 一、自动检查（每次 push 与 `npm test` 都跑）
 
@@ -165,6 +165,29 @@ Gemini 不在该基准内（Mac 版是另一套实现），单独验收；移植
 回归的 4 张「未识别」里含 `IMG_7830/7831.WEBP`（清言既有判定）与两张 `clean_gemini_*` 干净样本 ——
 前者顺带验证了「原图后缀保持 `.webp`，不会被改写成 `.png`」。
 
+### v0.17.2：预计时间显示（移植自 `lama-watermark-web-next`，逐字节核对）
+
+参考实现：`kunlun7210/lama-watermark-web-next` @ `82a737f2794950e0b06dea274da1cf30a2803276`，
+`src/main.js` 的 `timingSeconds` / `rememberTiming` / `updateBatchHint` 三个函数**原文照搬**（见 `tests/estimate-reference.txt` 固定装置）。
+唯一按本仓约定的改动是 localStorage 键前缀（`lama-seconds-`，参考站为 `lama-next-seconds-`）——
+两站同源，共用同一个键会互相污染估算值，故刻意不同名。
+
+| 层 | 判据 | 实测 |
+| --- | --- | --- |
+| ① 源码级 | 三个函数与固定装置**逐字节**相同（`Buffer` 比对，首个差异定位到行/字节） | ✅ 3/3 相同（`verify-batch-estimate.mjs`） |
+| ① 源码级 | 移植段整段原文与参考实现无多无少 | ✅ 24 行逐字节一致 |
+| ② 行为矩阵 | 17 组历史值（无/空串/0/负/NaN/垃圾/小数/极大/跨模型）× 42 个张数 = **84 次比对** | ✅ 0 处不同（键前缀归一化后） |
+| ② 防退化守卫 | 有历史必须读历史；无历史必须回退 16（int8）/ 40（fp32） | ✅ 两条守卫均通过 |
+| ③ 验收样例 | 截图原话 `2 张预计 约 16 秒；请保持页面在前台，每完成一张会立即保存。` | ✅ 逐字节一致（浏览器实测） |
+| ③ 验收样例 | 用户场景 `5 张预计 约 2 分钟；…`（120 秒向上取整） | ✅ 逐字节一致 |
+| 浏览器 | 位置/结构/样式：紧跟 `#selected-name`、`<p class="batch-hint">`、13px、`#aab5c8` | ✅ 全部符合 |
+| 浏览器 | 秒/分钟边界：60 秒整 → 「约 1 分钟」；7.5 秒 × 2 → 「约 15 秒」；600 秒 → 「约 10 分钟」 | ✅ 全部符合 |
+| 浏览器 | 清空列表与整批跑完 → 提示隐藏 | ✅ 全部符合 |
+| 浏览器 | 处理中张数随进度递减；整批结束后按 `0.65/0.35` 平滑写回历史 | ✅ 递推区间校验通过；单张反推实测 ≈0.29 秒/张 |
+
+`browser-estimate-check.mjs` 共 22 项断言、页面异常 0 —— 且跑在 `vite preview` 的**构建产物**上，
+不是 dev server 的源码（tree-shaking / 压缩后仍成立）。
+
 ## 六、发布核对
 
 每次发布两个地址后固定做三项：
@@ -207,6 +230,12 @@ TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-boundary-check.mjs
 
 # 旧入口迁移桥：缓存里的旧 HTML 是否仍能到达新版
 TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-stale-entry-check.mjs
+
+# 预计时间显示（文案/边界/结构/回写历史）；只跑构建产物
+TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-estimate-check.mjs
+# 可选：与参考站并排比对同一场景的文案（需站点可达）
+NEXT_URL=https://kunlun7210.github.io/lama-watermark-web-next \
+  TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-estimate-check.mjs
 
 # 20 张真实图片回归（中途强制刷新 + ZIP 逐字节比对；需本机测试集，不进 CI）
 TEST_URL_PREFIX=http://127.0.0.1:4173 \

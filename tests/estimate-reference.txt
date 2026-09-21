@@ -1,0 +1,24 @@
+function timingSeconds(modelId) {
+  const fallback = modelId === 'fp32' ? 40 : 16
+  try {
+    const value = Number(localStorage.getItem(`${TIMING_KEY_PREFIX}${modelId}`))
+    return Number.isFinite(value) && value > 0 ? value : fallback
+  } catch { return fallback }
+}
+
+function rememberTiming(modelId, seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return
+  const smoothed = timingSeconds(modelId) * 0.65 + seconds * 0.35
+  try { localStorage.setItem(`${TIMING_KEY_PREFIX}${modelId}`, smoothed.toFixed(2)) } catch { /* 忽略 */ }
+}
+
+function updateBatchHint(count = state.items.filter(item => needsProcessing(item)).length) {
+  if (!elements.batchHint || count <= 0) {
+    if (elements.batchHint) elements.batchHint.hidden = true
+    return
+  }
+  const seconds = Math.max(1, Math.round(timingSeconds(selectedModel().id) * count))
+  const text = seconds >= 60 ? `约 ${Math.ceil(seconds / 60)} 分钟` : `约 ${seconds} 秒`
+  elements.batchHint.textContent = `${count} 张预计 ${text}；请保持页面在前台，每完成一张会立即保存。`
+  elements.batchHint.hidden = false
+}

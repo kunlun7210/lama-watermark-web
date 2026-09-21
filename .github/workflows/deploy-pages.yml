@@ -64,14 +64,17 @@ jobs:
           TEST_URL_PREFIX=http://127.0.0.1:4173 CDP_PORT=9222 \
             node scripts/browser-ui-check.mjs
 
-          # 另两组浏览器断言，同为部署门禁（都在 dist/ 上传之前）：
+          # 另三组浏览器断言，同为部署门禁（都在 dist/ 上传之前）：
           #   边界行为 —— 原图字节一致 / 超限追加原子拒绝 / 损坏首图不拖垮整批
           #   旧入口迁移 —— 缓存的旧 HTML 仍能到达新版，且不会循环刷新
+          #   预计时间 —— 用户看得见的那行文案与参考实现逐字节一致（含回写历史）
           # 用 CHROME_PATH 指向上面探测到的浏览器，避免 CI 再依赖一次浏览器下载。
           CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-boundary-check.mjs
           CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-stale-entry-check.mjs
+          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+            node scripts/browser-estimate-check.mjs
 
       # 旧入口迁移测试会在 dist/ 里放一份临时旧 HTML 做夹具（脚本已在 finally 里删除）。
       # 这里再挡一道：夹具一旦残留就拒绝部署，绝不能混进 Pages 产物。
