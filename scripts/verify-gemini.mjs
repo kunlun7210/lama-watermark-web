@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
 import { GEMINI_ALPHA_DATA } from '../src/gemini-alpha-data.js'
-import { geminiAlphaBytes, geminiCandidateIsValid, processGemini } from '../src/gemini.js'
+import {
+  GEMINI_FALLBACK_MAX_RESIDUAL,
+  geminiAlphaBytes,
+  geminiCandidateIsValid,
+  geminiFallbackIsValid,
+  processGemini,
+} from '../src/gemini.js'
 
 const expected = {
   48: { length: 48 * 48, sha256: '5009eebd2969e887aa29235978169f7ea21d4cf039658a9a9f590a8d2be55ccb' },
@@ -30,6 +36,8 @@ const rejected = [
 ]
 if (accepted.some(candidate => !geminiCandidateIsValid(candidate))) throw new Error('Gemini 检测阈值错误：边界候选应通过')
 if (rejected.some(candidate => geminiCandidateIsValid(candidate))) throw new Error('Gemini 检测阈值错误：低于阈值的候选不应通过')
+if (!geminiFallbackIsValid(GEMINI_FALLBACK_MAX_RESIDUAL)) throw new Error('Gemini LaMa 回退门槛边界应通过')
+if (geminiFallbackIsValid(GEMINI_FALLBACK_MAX_RESIDUAL + 0.001)) throw new Error('高残差候选不应进入 LaMa')
 
 // 一个完全离开右下角候选区的纯色图必须保持原图。
 const blank = new Uint8ClampedArray(320 * 320 * 4)

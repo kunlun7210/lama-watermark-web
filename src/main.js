@@ -4,7 +4,8 @@ import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
 import { InferenceController } from './inference-controller.js'
-import { chooseThreadCount, lowerThreadCount, threadCeiling } from './thread-policy.js'
+import { chooseThreadCount, threadCeiling } from './thread-policy.js'
+import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
 
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
@@ -195,10 +196,6 @@ function updatePreviewVisibility() {
  * 4 张全部死于进度条取值），所以任一元素找不到就静默跳过——进度显示永远
  * 不允许影响处理流程本身。
  */
-/** ORT WASM 内存溢出（iPhone 13 等小内存机型在会话创建/推理时可能触发） */
-function isOutOfMemory(error) {
-  return /Out of memory|RangeError|no available backend/i.test(String(error?.message || error))
-}
 function setDownloadBar(visible, text, ratio = null, detail = '') {
   const bar = elements.downloadBar || document.querySelector('#download-bar')
   if (!bar) return
@@ -1174,45 +1171,46 @@ async function runBatch(items) {
       index++
       const fraction = (index - 1) / items.length
       setStatus(`第 ${index}/${items.length} 张 · ${item.name}`, fraction, '逐张处理中，请保持 Safari 在前台')
-      let oomDowngrades = 0
-      // 用内层循环重试当前张：OOM 时不需要刷新页面、也不需要退回外层重排，
-      // 当场重建一个低线程 Worker 再跑一遍就行（旧版必须刷新才生效）。
-      while (true) {
-        try {
-          // 结局未定，先把旧结果清掉：pending 的条目不该挂着一份结果。
-          // 重试若成功会重新写盘，所以这里不会丢东西。
-          await deleteResultRecord(item.id)
-          await processItem(item)
-          item.progressText = ''
-          break
-        } catch (error) {
-          console.error(error)
+      try {
+        // OOM 重试交给 runWithOomFallback：判定「到底是不是 WASM 内存溢出」和
+        // 「4 → 2 → 1 怎么降」都由它负责，主流程只提供 run / 重建 / 提示三件事。
+        // 这样做的好处是那段判定能脱离浏览器单测 —— 在真机上构造 OOM 并不现实。
+        await runWithOomFallback({
+          run: async () => {
+            // 结局未定，先把旧结果清掉：pending 的条目不该挂着一份结果。
+            // 重试若成功会重新写盘，所以这里不会丢东西。
+            await deleteResultRecord(item.id)
+            await processItem(item)
+            item.progressText = ''
+          },
+          getThreads: () => currentThreads,
+          setThreads: next => {
+            runtimeThreadCap = next
+            currentThreads = next
+          },
           // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
           // Worker 是会话的生命周期边界：terminate 掉它，WASM 内存与线程池一并归还，
           // 再以 2/1 线程重建，当场重试 —— 无需刷新页面。
           // 降级只记在本次页面的内存里：刷新或重开就按设备能力重新评估，
           // 免得一次偶发 OOM（当时后台开着别的标签页）把设备永久钉在低线程。
-          if (isOutOfMemory(error) && currentThreads > 1 && oomDowngrades < 2) {
-            oomDowngrades++
-            runtimeThreadCap = lowerThreadCount(currentThreads)
-            currentThreads = runtimeThreadCap
-            await releaseActiveSession()
+          rebuild: () => releaseActiveSession(),
+          onRetry: async next => {
             item.status = 'pending'
             item.error = null
-            item.progressText = `内存不足，本次页面已重建为 ${currentThreads} 线程并重试`
+            item.progressText = `内存不足，本次页面已重建为 ${next} 线程并重试`
             logThreadCount('因内存不足自动降级')
             renderQueue()
-            continue
-          }
-          item.status = 'failed'
-          item.error = isOutOfMemory(error)
-            ? '设备内存不足；建议切到 INT8 模型、关闭其他 Safari 标签页后重试'
-            : friendlyError(item, error)
-          failed++
-          await deleteResultRecord(item.id)
-          if (/120 秒|内存不足|推理超时|推理线程/.test(item.error)) await releaseActiveSession()
-          break
-        }
+          },
+        })
+      } catch (error) {
+        console.error(error)
+        item.status = 'failed'
+        item.error = isOutOfMemory(error)
+          ? '设备内存不足；建议切到 INT8 模型、关闭其他 Safari 标签页后重试'
+          : friendlyError(item, error)
+        failed++
+        await deleteResultRecord(item.id)
+        if (/120 秒|内存不足|推理超时|推理线程/.test(item.error)) await releaseActiveSession()
       }
       renderQueue()
       setMetrics(item.metrics || displayMetrics(item))

@@ -7,6 +7,8 @@ const LAYOUTS = [
   { size: 96, margin: 192 },
 ]
 
+export const GEMINI_FALLBACK_MAX_RESIDUAL = 0.35
+
 function decodeAlpha(size) {
   const source = GEMINI_ALPHA_DATA[size]
   if (!source) throw new Error(`缺少 Gemini ${size}px Alpha 模板`)
@@ -75,6 +77,10 @@ export function geminiCandidateIsValid(candidate) {
     return candidate.score >= 0.36 && candidate.spatial >= 0.20 && candidate.gradient >= 0.10
   }
   return candidate.spatial >= 0.32 && candidate.gradient >= 0.30
+}
+
+export function geminiFallbackIsValid(alphaResidual) {
+  return Number.isFinite(alphaResidual) && alphaResidual <= GEMINI_FALLBACK_MAX_RESIDUAL
 }
 
 export function detectGemini(rgba, width, height) {
@@ -223,6 +229,11 @@ export function processGemini(rgba, width, height) {
   }
 
   if (!alphaQualityOk) {
+    // 相关性阈值只说明右下角“像模板”，并不能证明它真是 Gemini 水印。
+    // 干净图片也可能偶然命中轮廓；反向 Alpha 后仍高度相关时不允许交给 LaMa 擦除。
+    if (!geminiFallbackIsValid(bestResidual)) {
+      return { ...common, method: 'gemini-template', status: 'not-found' }
+    }
     const rawMask = new Uint8Array(pixels)
     for (let index = 0; index < pixels; index++) rawMask[index] = alpha[index] > 0.012 ? 255 : 0
     const mask = dilate(rawMask, size, size, 7)
