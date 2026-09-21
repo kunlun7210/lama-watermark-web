@@ -4,6 +4,7 @@ import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
 import { InferenceController } from './inference-controller.js'
+import { preferredThreads, rememberThreadPref } from './threadPref.js'
 
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
@@ -123,18 +124,27 @@ const ortBase = new URL('ort/', assetBase).href
  * terminate 掉旧 Worker、重建一个新的（见 releaseActiveSession）。
  * 这反而是好事 —— 重建是「真正的初始化」，不再有「改了数字但线程池没重建」的陷阱。
  */
-const THREAD_PREF_KEY = 'lama-threads'
+/** 跨源隔离可用才有多线程（4 封顶）—— 这是本设备的上限 */
+const threadCeiling = () => (crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1)
 
-/** 本次加载该用几个线程：跨源隔离可用才有多线程；再叠加用户被 OOM 降级后的偏好 */
-function preferredThreads() {
-  const ceiling = crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1
-  let saved = 0
-  try { saved = Number(localStorage.getItem(THREAD_PREF_KEY)) || 0 } catch { /* 忽略 */ }
-  return saved > 0 ? Math.max(1, Math.min(saved, ceiling)) : ceiling
+/**
+ * localStorage 在 Safari 隐私模式下访问会抛错，包一层免得把推理带崩。
+ * 探测只做一次，之后走缓存。
+ */
+let storageCache
+function safeStorage() {
+  if (storageCache !== undefined) return storageCache
+  try {
+    const probe = '__lama_storage_probe__'
+    localStorage.setItem(probe, '1')
+    localStorage.removeItem(probe)
+    storageCache = localStorage
+  } catch { storageCache = null }
+  return storageCache
 }
 
 /** 当前 Worker 实际使用的线程数。线程数跟随会话，换线程数 = 重建 Worker */
-let currentThreads = preferredThreads()
+let currentThreads = preferredThreads({ storage: safeStorage(), ceiling: threadCeiling() })
 
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
@@ -234,7 +244,11 @@ function displayMetrics(item) {
  * 只在控制台留一条：排查性能问题时需要它确认跨源隔离是否生效（4 = 生效，1 = 退回单线程）。
  */
 function logThreadCount(reason = '') {
-  console.info(`推理线程：${currentThreads}（4 = 跨源隔离生效，1 = 退回单线程）${reason ? ` · ${reason}` : ''}`)
+  const ceiling = threadCeiling()
+  const degraded = currentThreads < ceiling
+    ? `，受降级记忆限制（${ceiling} → ${currentThreads}，到期自动恢复）`
+    : ''
+  console.info(`推理线程：${currentThreads}（4 = 跨源隔离生效，1 = 退回单线程）${degraded}${reason ? ` · ${reason}` : ''}`)
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -638,7 +652,7 @@ function getSession(model) {
     let bytes = await fetchModel(model, controller.signal)
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
-    currentThreads = preferredThreads()
+    currentThreads = preferredThreads({ storage: safeStorage(), ceiling: threadCeiling() })
     await inference.initialise({ model, modelBytes: bytes, threads: currentThreads, ortBase })
     bytes = null
     // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己认成当前会话 ——
@@ -1183,10 +1197,12 @@ async function runBatch(items) {
           // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
           // Worker 是会话的生命周期边界：terminate 掉它，WASM 内存与线程池一并归还，
           // 再以 2/1 线程重建，当场重试 —— 无需刷新页面。
+          // 这次降级会被记下来（带 24 小时有效期）：期间不再重复撞 OOM，
+          // 到期若无新的 OOM 就自动恢复自动线程数，全程不需要用户操作。
           if (isOutOfMemory(error) && currentThreads > 1 && oomDowngrades < 2) {
             oomDowngrades++
             currentThreads = currentThreads > 2 ? 2 : 1
-            try { localStorage.setItem(THREAD_PREF_KEY, String(currentThreads)) } catch { /* 忽略 */ }
+            rememberThreadPref(safeStorage(), currentThreads)
             await releaseActiveSession()
             item.status = 'pending'
             item.error = null
