@@ -149,14 +149,23 @@ Vite 本地服务直接返回 COOP/COEP 响应头。GitHub Pages 不支持自定
 浏览器回归脚本需要另行启动带 CDP 的 Chrome：
 
 ```bash
-node scripts/browser-ui-check.mjs        # 版本号/文案/布局断言，可指向线上地址
-node scripts/browser-batch-test.mjs      # 真实批量处理 + 主线程阻塞读数
-node scripts/browser-gemini-parity.mjs   # Gemini 与既有规则并行、互不干扰
+npm test                                              # 模型校验 + 规则/策略单测 + 构建
+
+node scripts/browser-ui-check.mjs                      # 版本号/文案/布局断言（CDP，可指向线上地址）
+node scripts/browser-batch-test.mjs                    # 真实批量处理 + 主线程阻塞读数
+node scripts/browser-gemini-parity.mjs                 # Gemini 与既有规则并行、互不干扰
+node scripts/browser-webkit-check.mjs <url> [样张…]     # 真 Safari 内核：环境诊断 + 真实处理
+node scripts/browser-ab-compare.mjs <A> <B> <样张…>     # A/B 对照：耗时 + 主线程长任务/心跳
+node scripts/browser-restore-check.mjs <url> 三张样张   # 刷新恢复的双向验证（该跳过的跳过、该预热的预热）
 ```
 
 `browser-ui-check.mjs` 支持用 `TEST_URL_PREFIX` 指向线上地址复跑同一套断言；版本号只锁语义版本、日期只校验格式，因此不会因为"不是当天构建"而误报。
 
-CI 分两层：`Deploy GitHub Pages` 跑 `npm test`（模型 SHA-256、规则与策略单测、构建），`Browser UI check` 额外起无头 Chrome 跑上面那套 DOM 断言 —— 版本号、文案漂移、元素被藏起来这类回归只有真实渲染才看得见。
+后三个脚本依赖 Playwright（已在 devDependencies；首次使用 WebKit 引擎需 `npx playwright install webkit`）。它们需要外部样张，所以不进 CI。
+
+CI 两层：`Deploy GitHub Pages` 里 `npm test` 与**浏览器 UI 断言（部署门禁）**都在 `build` job 内、`deploy` 之前 —— 断言失败整个 job 就失败，**Pages 不会更新**；`Browser UI check (PR)` 只在 PR 上跑同一套断言。断言跑在 `vite preview` 的**构建产物**上，而不是 dev server 的源码上 —— tree-shaking、压缩、`import.meta.env` 替换、`?worker&inline` 这些只在构建后才成形。
+
+已实测的结论与依据见 [VALIDATION.md](./VALIDATION.md)（含未验证项清单）。
 
 ## 模型来源与许可
 

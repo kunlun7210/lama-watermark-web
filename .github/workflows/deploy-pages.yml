@@ -25,6 +25,45 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+      # 浏览器 UI 断言必须放在**同一个 job 内、部署之前**，它才是门禁：
+      # 失败则 build job 失败，deploy job 不会执行。
+      # 早先把它拆成独立 workflow 是错的 —— 两者并行跑，UI 断言红了 Pages 也已经上线了。
+      - name: 浏览器 UI 断言（部署门禁）
+        run: |
+          set -euo pipefail
+
+          npx vite preview --host 127.0.0.1 --port 4173 > /tmp/preview.log 2>&1 &
+          preview_pid=$!
+          chrome_pid=''
+          trap 'kill "$preview_pid" ${chrome_pid:+"$chrome_pid"} 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:4173/ > /dev/null; then break; fi
+            if [ "$i" = 60 ]; then echo "预览服务未就绪" >&2; cat /tmp/preview.log >&2; exit 1; fi
+            sleep 1
+          done
+
+          # 起服务、起浏览器、跑断言写在同一个 step：后台进程跨 step 不保证存活。
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then echo "runner 上没有可用的 Chrome/Chromium" >&2; exit 1; fi
+          echo "使用浏览器：$CHROME"
+          "$CHROME" --version
+
+          # --no-sandbox 在容器里是必需项，不加会因 sandbox 初始化失败直接退出。
+          "$CHROME" --headless=new --no-sandbox --disable-gpu \
+            --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile \
+            --window-size=402,874 http://127.0.0.1:4173/ > /tmp/chrome.log 2>&1 &
+          chrome_pid=$!
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:9222/json/version > /dev/null; then break; fi
+            if [ "$i" = 40 ]; then echo "Chrome CDP 未就绪" >&2; cat /tmp/chrome.log >&2; exit 1; fi
+            sleep 1
+          done
+
+          TEST_URL_PREFIX=http://127.0.0.1:4173 CDP_PORT=9222 \
+            node scripts/browser-ui-check.mjs
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
