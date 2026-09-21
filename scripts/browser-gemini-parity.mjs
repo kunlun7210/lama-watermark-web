@@ -1,3 +1,14 @@
+/**
+ * Gemini 浏览器侧 parity：逐张比对识别状态、处理方法、坐标、模板尺寸、Alpha 增益与动作哈希。
+ *
+ * ⚠️ 基线里 `clean_*` 样本必须为 `status: "not-found"` + `actionSha256: null`。
+ * 自 v0.15.0 起，反向 Alpha 残差超过 `GEMINI_FALLBACK_MAX_RESIDUAL`(0.35) 就直接判 not-found、
+ * **不生成掩膜** —— 干净图偶然命中轮廓（如 `clean_gemini_sample_2.png` 残差高达 0.965）
+ * 因此不会被送进 LaMa 擦掉。没有掩膜自然没有动作哈希，这是正确行为，不是缺字段。
+ *
+ * 反过来：若某个 `clean_*` 条目出现 `needs-inpaint`，说明**基线陈旧或残差门槛被改坏了**，
+ * 别为了让脚本变绿去重录基线 —— 先查 `src/gemini.js` 的 `geminiFallbackIsValid`。
+ */
 import { execFileSync } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'

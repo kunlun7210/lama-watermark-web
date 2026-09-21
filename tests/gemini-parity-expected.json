@@ -190,14 +190,14 @@
     "actionSha256": null
   },
   "clean_gemini_sample_2.png": {
-    "status": "needs-inpaint",
-    "method": "gemini-lama",
+    "status": "not-found",
+    "method": "gemini-template",
     "x": 816,
     "y": 1120,
     "size": 48,
     "alphaGain": 0.35,
     "alphaResidual": 0.9652542901088248,
-    "actionSha256": "20d83357afc8d7663931146995fe7b9ef0c63fdc5bdd4f16ce49d51fe576145a"
+    "actionSha256": null
   },
   "clean_gemini_sample_3.png": {
     "status": "not-found",
