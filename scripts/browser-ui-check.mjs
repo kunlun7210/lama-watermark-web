@@ -69,6 +69,14 @@ await send('Emulation.setUserAgentOverride', {
   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1',
   platform: 'iPhone',
 })
+// 等页面真正就绪再动 localStorage —— 导航未完成时它的 origin 还是 null，
+// 访问 localStorage 会抛 SecurityError。本地服务响应快看不出来，线上首屏慢就会踩到。
+for (let attempt = 0; attempt < 120; attempt++) {
+  try {
+    if (await evaluate(`document.readyState === 'complete' && location.origin !== 'null'`)) break
+  } catch { /* 尚未就绪，继续等 */ }
+  await sleep(250)
+}
 // 模拟旧版曾把 OOM 降级永久写进 localStorage：新版启动后必须主动清掉，
 // 否则被钉在单线程的设备永远恢复不了。
 await evaluate(`localStorage.setItem('lama-threads', '1'); true`)
