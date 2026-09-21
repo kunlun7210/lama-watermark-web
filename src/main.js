@@ -4,7 +4,7 @@ import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
 import { InferenceController } from './inference-controller.js'
-import { preferredThreads, rememberThreadPref } from './threadPref.js'
+import { chooseThreadCount, lowerThreadCount, threadCeiling } from './thread-policy.js'
 
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
@@ -124,27 +124,20 @@ const ortBase = new URL('ort/', assetBase).href
  * terminate 掉旧 Worker、重建一个新的（见 releaseActiveSession）。
  * 这反而是好事 —— 重建是「真正的初始化」，不再有「改了数字但线程池没重建」的陷阱。
  */
-/** 跨源隔离可用才有多线程（4 封顶）—— 这是本设备的上限 */
-const threadCeiling = () => (crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 2) : 1)
+const LEGACY_THREAD_PREF_KEY = 'lama-threads'
 
-/**
- * localStorage 在 Safari 隐私模式下访问会抛错，包一层免得把推理带崩。
- * 探测只做一次，之后走缓存。
- */
-let storageCache
-function safeStorage() {
-  if (storageCache !== undefined) return storageCache
-  try {
-    const probe = '__lama_storage_probe__'
-    localStorage.setItem(probe, '1')
-    localStorage.removeItem(probe)
-    storageCache = localStorage
-  } catch { storageCache = null }
-  return storageCache
+// 旧版会把一次偶发 OOM 永久写进 localStorage，导致设备以后一直停在 1/2 线程。
+// Worker 现在可以当场重建，永久偏好已无必要；启动时清掉历史遗留值。
+try { localStorage.removeItem(LEGACY_THREAD_PREF_KEY) } catch { /* 忽略 */ }
+
+/** 仅在当前页面生命周期内生效；刷新或重新打开后自动重新评估设备能力。 */
+let runtimeThreadCap = 0
+function preferredThreads() {
+  return chooseThreadCount(crossOriginIsolated, navigator.hardwareConcurrency, runtimeThreadCap)
 }
 
 /** 当前 Worker 实际使用的线程数。线程数跟随会话，换线程数 = 重建 Worker */
-let currentThreads = preferredThreads({ storage: safeStorage(), ceiling: threadCeiling() })
+let currentThreads = preferredThreads()
 
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
@@ -244,9 +237,9 @@ function displayMetrics(item) {
  * 只在控制台留一条：排查性能问题时需要它确认跨源隔离是否生效（4 = 生效，1 = 退回单线程）。
  */
 function logThreadCount(reason = '') {
-  const ceiling = threadCeiling()
+  const ceiling = threadCeiling(crossOriginIsolated, navigator.hardwareConcurrency)
   const degraded = currentThreads < ceiling
-    ? `，受降级记忆限制（${ceiling} → ${currentThreads}，到期自动恢复）`
+    ? `，本次页面已降级（重开页面即按设备能力重新评估）`
     : ''
   console.info(`推理线程：${currentThreads}（4 = 跨源隔离生效，1 = 退回单线程）${degraded}${reason ? ` · ${reason}` : ''}`)
 }
@@ -652,7 +645,7 @@ function getSession(model) {
     let bytes = await fetchModel(model, controller.signal)
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
-    currentThreads = preferredThreads({ storage: safeStorage(), ceiling: threadCeiling() })
+    currentThreads = preferredThreads()
     await inference.initialise({ model, modelBytes: bytes, threads: currentThreads, ortBase })
     bytes = null
     // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己认成当前会话 ——
@@ -1197,16 +1190,16 @@ async function runBatch(items) {
           // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
           // Worker 是会话的生命周期边界：terminate 掉它，WASM 内存与线程池一并归还，
           // 再以 2/1 线程重建，当场重试 —— 无需刷新页面。
-          // 这次降级会被记下来（带 24 小时有效期）：期间不再重复撞 OOM，
-          // 到期若无新的 OOM 就自动恢复自动线程数，全程不需要用户操作。
+          // 降级只记在本次页面的内存里：刷新或重开就按设备能力重新评估，
+          // 免得一次偶发 OOM（当时后台开着别的标签页）把设备永久钉在低线程。
           if (isOutOfMemory(error) && currentThreads > 1 && oomDowngrades < 2) {
             oomDowngrades++
-            currentThreads = currentThreads > 2 ? 2 : 1
-            rememberThreadPref(safeStorage(), currentThreads)
+            runtimeThreadCap = lowerThreadCount(currentThreads)
+            currentThreads = runtimeThreadCap
             await releaseActiveSession()
             item.status = 'pending'
             item.error = null
-            item.progressText = `内存不足，已重建为 ${currentThreads} 线程并重试`
+            item.progressText = `内存不足，本次页面已重建为 ${currentThreads} 线程并重试`
             logThreadCount('因内存不足自动降级')
             renderQueue()
             continue

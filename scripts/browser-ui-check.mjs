@@ -69,6 +69,9 @@ await send('Emulation.setUserAgentOverride', {
   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1',
   platform: 'iPhone',
 })
+// 模拟旧版曾把 OOM 降级永久写进 localStorage：新版启动后必须主动清掉，
+// 否则被钉在单线程的设备永远恢复不了。
+await evaluate(`localStorage.setItem('lama-threads', '1'); true`)
 await send('Page.reload', { ignoreCache: false })
 for (let attempt = 0; attempt < 80; attempt++) {
   if (await evaluate(`document.readyState === 'complete'`)) break
@@ -103,6 +106,7 @@ const ui = await evaluate(`(() => {
     canvasesHidden: [...preview.querySelectorAll('canvas')].every(canvas => getComputedStyle(canvas).display === 'none'),
     oldCopyPresent: document.body.innerText.includes('LaMa-ONNX 结果') || document.body.innerText.includes('Gemini 专用还原暂未移植'),
     geminiInFooter: document.body.innerText.includes('Gemini 会优先使用专用还原'),
+    legacyThreadPref: localStorage.getItem('lama-threads'),
   }
 })()`)
 
@@ -120,6 +124,7 @@ const checks = [
   ['状态区收起（0 格）', ui.metricsChildren === 0],
   ['预览区空态', ui.previewEmpty === 'true'],
   ['空态下 canvas 隐藏', ui.canvasesHidden === true],
+  ['旧版永久线程上限已被清除', ui.legacyThreadPref === null],
 ]
 console.log('=== UI 检查（iPhone 17 Pro · iOS 27）===')
 let failed = 0
