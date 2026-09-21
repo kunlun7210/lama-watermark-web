@@ -3,6 +3,7 @@ import { createRuleEngine } from './rules.js'
 import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
 import { buildZip } from './zip.js'
+import { batchLimitMessage, batchLimitReason } from './batch-limits.js'
 import { InferenceController } from './inference-controller.js'
 import { chooseThreadCount, threadCeiling } from './thread-policy.js'
 import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
@@ -10,16 +11,22 @@ import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
 // 刷新只影响页面本身，Cache Storage 里的模型缓存原样保留。
+//
+// ⚠️ 必须用 location.replace 换一个**新的文档 URL**（带 app-build=<版本>），不能只 reload()：
+// reload 很可能又拿回同一份被缓存的旧 HTML，刷新完了还是旧的，白刷一次。
+// 换 URL 等于换一个缓存键，新文档必然重新取。
+// 循环保护也落在 URL 上：已经带着同一个 app-build 还发现版本不一致，就只能说明
+// CDN 上 version.json 与 HTML 还没对齐 —— 此时停下，绝不无限刷新。
 void (async () => {
   try {
     const response = await fetch(new URL('version.json', document.baseURI), { cache: 'no-store' })
     if (!response.ok) return
     const { version } = await response.json()
     if (!version || version === APP_VERSION) return
-    const key = 'lama-version-reload'
-    if (sessionStorage.getItem(key) === version) return // 已为本版本刷新过，防循环
-    sessionStorage.setItem(key, version)
-    location.reload()
+    const url = new URL(location.href)
+    if (url.searchParams.get('app-build') === String(version)) return // 已为该版本换过 URL，防循环
+    url.searchParams.set('app-build', String(version))
+    location.replace(url.toString())
   } catch { /* 网络不可用时保持现状 */ }
 })()
 
@@ -30,8 +37,6 @@ const IMAGE_STORE = 'images'
 // 用 onupgradeneeded 补建 store，老库里的 images 记录不受影响（升级是非破坏的）。
 const IMAGE_DB_VERSION = 2
 const RESULT_STORE = 'results'
-const RESTORE_LIMIT_BYTES = 200 * 1024 * 1024
-const RESTORE_LIMIT_COUNT = 40
 const INFER_TIMEOUT_MS = 120000
 const MODEL_CACHE_NAME = 'lama-model-v2'
 const CHUNK_RETRIES = 4
@@ -879,6 +884,31 @@ function outputFormat(item) {
   return { mime: 'image/png', quality: undefined, ext: '.png' }
 }
 
+/**
+ * 未识别（保持原图）项的输出后缀 —— 必须沿用**原文件后缀**。
+ * 旧实现统一按 outputFormat 走，把 WebP / HEIC 写成了 .png：
+ * 文件名说 PNG、字节却是 HEIC，存进相册或解压后打不开。
+ */
+function originalExt(item) {
+  const matched = String(item.name).match(/\.[^.]+$/)
+  if (matched) return matched[0].toLowerCase()
+  const type = String(item.file?.type || item.blob?.type || '')
+  if (type === 'image/jpeg') return '.jpg'
+  if (type === 'image/webp') return '.webp'
+  if (type === 'image/heic') return '.heic'
+  if (type === 'image/heif') return '.heif'
+  return '.png'
+}
+
+/**
+ * 结果的实际 MIME：优先用 blob 自己的 type。
+ * 「保持原图」项的结果就是原始文件，它的 type 是 image/webp / image/heic 之类 ——
+ * 无条件套 outputFormat().mime 会让这些文件以错误的 MIME 交给系统分享。
+ */
+function resultMime(item) {
+  return item.blob?.type || outputFormat(item).mime
+}
+
 function makeThumbnail(canvas) {
   const width = 132
   const height = Math.max(1, Math.round(canvas.height * (width / canvas.width)))
@@ -1091,14 +1121,20 @@ async function processItem(item) {
     item.status = 'done'
   }
 
+  // 「未识别 · 保持原图」的结果必须**就是原始文件本身**：
+  // 一旦过 canvas.toBlob('image/jpeg', 0.95)，JPEG 会被二次压缩、EXIF 等元数据全丢，
+  // PNG/WebP/HEIC 还会被转码 —— 那样导出的就不是「原图」了，只是看起来差不多。
+  // 真正修复过的 done 项仍走 canvas 导出（像素已被修改，重编码是原路径）。
+  // 缩略图不在此列：它只是列表里的小方块，仍可由 canvas 生成。
+  const unchanged = item.status === 'unchanged'
   const format = outputFormat(item)
-  const blob = await canvasBlob(elements.result, format.mime, format.quality)
+  const blob = unchanged ? item.file : await canvasBlob(elements.result, format.mime, format.quality)
   revokeItem(item)
   item.blob = blob
   item.url = URL.createObjectURL(blob)
   const thumb = await makeThumbnail(elements.result)
   item.thumbUrl = URL.createObjectURL(thumb)
-  item.outputExt = format.ext
+  item.outputExt = unchanged ? originalExt(item) : format.ext
   item.modelId = model.id
   item.elapsed = `${((performance.now() - totalStarted) / 1000).toFixed(1)} 秒`
   item.inferSeconds = (inferMs / 1000).toFixed(1)
@@ -1262,7 +1298,9 @@ function canShareFiles() {
 async function saveToAlbum(items) {
   const targets = items.filter(item => item.blob)
   if (!targets.length) return
-  const files = targets.map(item => new File([item.blob], outputName(item), { type: outputFormat(item).mime }))
+  // MIME 取结果 blob 自己的 type：「保持原图」的项就是原始 WebP/HEIC，
+  // 套 outputFormat 的 image/png 会让系统分享面板按错误类型处理。
+  const files = targets.map(item => new File([item.blob], outputName(item), { type: resultMime(item) }))
   if (!canShareFiles()) {
     const link = document.createElement('a')
     link.href = targets[0].url
@@ -1351,8 +1389,10 @@ function openImageDatabase() {
 }
 
 async function saveSelectedFiles(files, ids) {
-  const total = files.reduce((sum, file) => sum + file.size, 0)
-  if (files.length > RESTORE_LIMIT_COUNT || total > RESTORE_LIMIT_BYTES) return false
+  // 防御性复查（正常路径已在 addFiles 里原子拒绝过）。
+  // ⚠️ 超限时只返回 false，**绝不调用 deleteStoredFiles、也不清空任何 store** ——
+  // 那会顺手毁掉用户上一批已经处理好的结果，而本次追加本来就没被接受。
+  if (batchLimitReason(files.map(file => ({ file })))) return false
   const database = await openImageDatabase()
   try {
     await new Promise((resolve, reject) => {
@@ -1383,15 +1423,24 @@ async function readSelectedFiles() {
       request.onerror = () => reject(request.error || new Error('图片恢复失败'))
     })
     if (!record?.files?.length) return { files: [], ids: [] }
-    return {
-      files: record.files.map(entry => new File([entry.blob], entry.name, {
+    // 逐条重建，并且 file 与 id 在同一次循环里成对产出 ——
+    // 这样「跳过一条坏记录」时它的 id 也一起被跳过，永远不会出现错位。
+    const rawFiles = record.files
+    const rawIds = Array.isArray(record.ids) && record.ids.length === rawFiles.length ? record.ids : []
+    const files = []
+    const ids = []
+    for (let index = 0; index < rawFiles.length; index++) {
+      const entry = rawFiles[index]
+      if (!entry?.blob) continue // 记录里没有字节：跳过这一条（连带它的 id），不让它污染对齐
+      files.push(new File([entry.blob], entry.name || `image-${index + 1}`, {
         type: entry.type || entry.blob.type,
         lastModified: entry.lastModified || Date.now(),
-      })),
-      // v1 的老记录没有 ids（那时还没做结果恢复）。返回空数组让调用方回退到新生成的 id：
+      }))
+      // v1 的老记录没有 ids（那时还没做结果恢复）。留空让调用方回退到新生成的 id：
       // 这类条目只是丢掉「结果恢复」，原图照常恢复、重跑即可，不该整体拒绝恢复。
-      ids: Array.isArray(record.ids) && record.ids.length === record.files.length ? record.ids : [],
+      ids.push(rawIds[index] || null)
     }
+    return { files, ids }
   } finally { database.close() }
 }
 
@@ -1477,10 +1526,16 @@ async function readResultRecords(ids) {
   try {
     const transaction = database.transaction(RESULT_STORE, 'readonly')
     const store = transaction.objectStore(RESULT_STORE)
-    const records = await Promise.all(wanted.map(id => new Promise((resolve, reject) => {
+    // 逐条独立捕获。旧实现用 Promise.all + reject：任何一条结果读失败（记录损坏、
+    // 事务被打断）都会让整批恢复连带失败 —— 一张坏记录废掉另外 19 张的好结果。
+    // 现在失败的条目只是缺席，其余照常还原。
+    const records = await Promise.all(wanted.map(id => new Promise(resolve => {
       const request = store.get(id)
       request.onsuccess = () => resolve(request.result || null)
-      request.onerror = () => reject(request.error || new Error('结果恢复失败'))
+      request.onerror = () => {
+        console.warn('一条处理结果读取失败，已跳过（不影响其它条目）', id, request.error)
+        resolve(null)
+      }
     })))
     return new Map(records.filter(record => record?.outputBlob).map(record => [record.id, record]))
   } finally { database.close() }
@@ -1506,19 +1561,64 @@ async function deleteResultRecord(id) {
 }
 
 async function addFiles(files, { restored = false, ids = [] } = {}) {
-  const accepted = files.filter(file => file && file.size > 0)
-  if (!accepted.length) return
-  for (let index = 0; index < accepted.length; index++) {
-    const file = accepted[index]
-    // 恢复时沿用落盘的 id，结果记录才挂得上；用户新选图则现生成一个。
-    const item = { id: ids[index] || newItemId(), file, name: file.name, restored, status: 'pending', thumbUrl: null, url: null, blob: null }
-    state.items.push(item)
+  // ① 先配对、再过滤。
+  // ids[index] 是按 files 的**原始下标**对齐的（落盘时一一对应）。旧实现先 filter 掉
+  // 零字节文件、再按过滤后的下标取 ids[index]：只要列表里夹着一张空文件，
+  // 后面所有条目就整体错位一格 —— 处理结果会挂到别人的图上，而且看不出来。
+  // 所以 file 与 id 必须先绑成 { file, id } 这个整体，此后只以整体为单位过滤/标记。
+  const pairs = (files || [])
+    .map((file, index) => ({ file, id: ids[index] || null }))
+    .filter(pair => pair.file)
+  if (!pairs.length) return
+
+  // ② 组装候选条目。零字节文件分两种命运：
+  //    新选择 → 直接丢弃（用户重选即可，与旧行为一致）；
+  //    恢复   → 保留成一条 failed。既然它确实在落盘批次里，就让用户看到是哪一张坏了，
+  //             而不是让它凭空消失、让列表张数与上次对不上（某一张损坏只影响这一张）。
+  const candidates = []
+  const emptyItems = []
+  for (const pair of pairs) {
+    const item = {
+      id: pair.id || newItemId(),
+      file: pair.file,
+      name: pair.file.name,
+      restored,
+      status: 'pending',
+      thumbUrl: null,
+      url: null,
+      blob: null,
+    }
+    if (pair.file.size > 0) candidates.push(item)
+    else if (restored) {
+      item.status = 'failed'
+      item.error = '这张图片是空文件，请重新选择'
+      emptyItems.push(item)
+    }
   }
-  const latest = state.items[state.items.length - 1]
+
+  // ③ 超限 = 整次追加原子拒绝，判定必须在**任何副作用之前**完成。
+  //    旧实现先把图片塞进 state.items 才开始检查能否持久化，于是出现状态不一致：
+  //    队列里有新图片 → IndexedDB 里仍是旧批次 → 刷新后新图片凭空消失。
+  //    现在候选批次 = 已有条目 + 本次接受的文件，超 40 张或超 200MB 就整批拒绝：
+  //    不碰 state.items、不碰两个 store、不启动模型预热，也不允许部分追加。
+  //    （张数/体积判定收敛在 batch-limits.js，主流程与单测共用同一份真相。）
+  if (!restored) {
+    const reason = batchLimitReason([...state.items, ...candidates])
+    if (reason) {
+      // 清空输入框的值：否则用户重新选中「同样这些文件」时不会触发 change，界面像卡死。
+      elements.file.value = ''
+      setStatus(batchLimitMessage(reason, state.items.length), 0, '本次选择已整批忽略，未加入列表')
+      return
+    }
+  }
+
+  state.items.push(...candidates, ...emptyItems)
+  const added = candidates.length + emptyItems.length
+  const latest = candidates[candidates.length - 1] || null
   elements.selectedName.hidden = false
   elements.selectedName.textContent = restored
-    ? `已恢复上次的 ${accepted.length} 张图片，列表共 ${state.items.length} 张`
-    : `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
+    ? `已恢复上次的 ${added} 张图片，列表共 ${state.items.length} 张`
+    : `已选择 ${candidates.length} 张，列表共 ${state.items.length} 张`
   // 同步标记：用户主动选图 = 下次打开可以恢复（localStorage 是同步落盘，关浏览器也不丢）
   try { localStorage.setItem('lama-restore', '1') } catch { /* 忽略 */ }
   // 选完图立刻在后台准备模型（下载 / 读缓存 / 校验 / 建会话）。
@@ -1537,7 +1637,7 @@ async function addFiles(files, { restored = false, ids = [] } = {}) {
       elements.selectedName.textContent += ' · 图片较多，本次不启用自动恢复'
     }
   } catch (error) { console.warn('无法缓存所选图片', error) }
-  await showItem(latest.id)
+  if (latest) await showItem(latest.id)
   renderQueue()
   updatePreviewVisibility()
 }
@@ -1624,19 +1724,21 @@ async function restoreSelectedFiles() {
     if (localStorage.getItem('lama-restore') === '0') return
     const { files, ids } = await readSelectedFiles()
     if (!files.length) return
-    // 上次缓存的文件可能已被系统清理成空壳：先试解码第一张，坏掉就整体丢弃，
-    // 免得列表里全是「解码失败」的死条目。
-    const probe = files[0]
-    if (!probe.size) throw new Error('缓存文件为空')
-    try {
-      const bitmap = await decodeFile(probe)
-      bitmap.close?.()
-    } catch {
-      throw new Error('缓存文件已损坏')
-    }
+    // ⚠️ 这里不再「只探测第一张，解码失败就判整批损坏」。
+    // 第一张可能只是它自己坏了（传输截断、被清理成空壳），而同一批里其它图片
+    // **已经处理好的结果**是无辜的 —— 旧逻辑会连带把整批原图和全部结果删掉，
+    // 把「一张坏图」升级成「用户一晚上的批量白跑」。
+    // 现在批次读取成功就先把全部条目恢复出来，个别条目的问题只影响它自己：
+    // 空文件在 addFiles 里标 failed；解码不了的会在处理它时单独失败。
     await addFiles(files, { restored: true, ids })
     // 还原已完成的结果：把落盘的输出直接画回来，这些图不必重跑。
-    const records = await readResultRecords(state.items.map(item => item.id))
+    // 整批读取再兜一层：读不到结果只意味着「这几张要重跑」，不该影响队列恢复。
+    let records = new Map()
+    try {
+      records = await readResultRecords(state.items.map(item => item.id))
+    } catch (error) {
+      console.warn('处理结果读取失败，本次只恢复原图（结果记录未被删除）', error)
+    }
     let completed = 0
     for (const item of state.items) {
       const record = records.get(item.id)
@@ -1681,10 +1783,12 @@ async function restoreSelectedFiles() {
         : '点「开始批量处理」继续',
     )
   } catch (error) {
-    console.warn('无法恢复上次图片', error)
-    try { localStorage.setItem('lama-restore', '0') } catch { /* 忽略 */ }
-    await deleteStoredFiles()
-    setStatus('上次的图片缓存已失效，请重新选择图片', 0, '浏览器清理过本地数据，这是正常的')
+    // 外层失败只**报告**，不动数据：
+    // 数据库里那批任务与结果都还在，重开页面通常就能恢复（多为读取被占用/被打断）。
+    // 这里绝不能写 lama-restore=0、更不能 deleteStoredFiles —— 那等于因为一次读取失败
+    // 就永久销毁用户的任务；真要放弃，由用户主动点「清空列表」。
+    console.warn('恢复上次任务失败', error)
+    setStatus('暂时无法读取上次任务，请重新打开页面；如仍失败，可手动清空列表后重新选择', 0)
   }
 }
 

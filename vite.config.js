@@ -26,6 +26,28 @@ function versionPlugin() {
   }
 }
 
+/**
+ * 给固定入口加上构建版本查询参数：assets/app.js?v=20260921123456。
+ * 路径固定解决「旧 HTML 引用已删除文件」的 404；查询参数负责让浏览器/CDN
+ * 把新构建当作新资源，而不会命中十分钟的旧缓存。
+ */
+function appEntryQueryPlugin() {
+  const stamp = APP_VERSION
+  const rewrite = (html, file) => html.replace(
+    new RegExp(`(assets\\/${file})(?=["'])`, 'g'),
+    `$1?v=${stamp}`,
+  )
+  return {
+    name: 'app-entry-query',
+    transformIndexHtml: {
+      order: 'post',
+      handler(html) {
+        return rewrite(rewrite(html, 'app\\.js'), 'app\\.css')
+      },
+    },
+  }
+}
+
 export default defineConfig({
   base: './',
   define: {
@@ -33,7 +55,28 @@ export default defineConfig({
     __APP_SEMVER__: JSON.stringify(APP_SEMVER),
     __BUILD_DATE__: JSON.stringify(BUILD_DATE),
   },
-  plugins: [versionPlugin()],
+  plugins: [versionPlugin(), appEntryQueryPlugin()],
+  build: {
+    // 入口与样式的文件名**固定**，不再带内容哈希 —— 理由是缓存自救：
+    // 用户可能拿着缓存里的旧 HTML，而它引用的 assets/index-<hash>.js 已被本次部署删掉，
+    // 于是入口 JS 直接 404，连「检查版本 → 自动刷新」的那段代码都跑不起来
+    // （入口 JS 救不了「入口 JS 已经 404」）。固定成 app.js / app.css 后，
+    // 旧 HTML 引用的路径永远存在；新旧内容的区分交给 URL 上的构建版本参数。
+    rollupOptions: {
+      output: {
+        // 只把主入口钉成 app.js。推理 Worker 走 `?worker&inline` 内联进主包，
+        // 不是独立入口（产物里只有一个 JS），所以 isEntry 就等于「唯一入口」。
+        // 其余 chunk / 资源仍带哈希，避免同名互相覆盖。
+        entryFileNames: chunk => (chunk.isEntry ? 'assets/app.js' : 'assets/[name]-[hash].js'),
+        chunkFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: assetInfo => {
+          const names = assetInfo.names || (assetInfo.name ? [assetInfo.name] : [])
+          if (names.some(name => name.endsWith('.css'))) return 'assets/app.css'
+          return 'assets/[name]-[hash][extname]'
+        },
+      },
+    },
+  },
   resolve: {
     // ORT 的默认入口里含 `new URL("ort-wasm-simd-threaded.wasm", import.meta.url)`，
     // Vite 见到就会把 13MB 的 wasm 复制进 dist/assets —— 而我们运行时用的是

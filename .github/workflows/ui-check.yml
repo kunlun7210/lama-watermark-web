@@ -66,3 +66,16 @@ jobs:
 
           TEST_URL_PREFIX=http://127.0.0.1:4173 CDP_PORT=9222 \
             node scripts/browser-ui-check.mjs
+
+          # 与 deploy-pages.yml 的 build job 跑同一组：PR 阶段就拦住边界行为回归
+          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+            node scripts/browser-boundary-check.mjs
+          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+            node scripts/browser-stale-entry-check.mjs
+
+      - name: 确认浏览器测试夹具未残留
+        run: |
+          if [ -e dist/stale-entry-test.html ]; then
+            echo "临时测试 HTML 残留在 dist/" >&2
+            exit 1
+          fi

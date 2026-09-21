@@ -2,7 +2,7 @@
 
 本文件记录**已经实测过**的结论与依据。原则：只写跑过的数据，未验证的进最后一节明说。
 
-日期：2026-09-21 ／ 版本：以 `package.json` 为准（本文件数据覆盖 v0.11.2 – v0.17.0）
+日期：2026-09-21 ／ 版本：以 `package.json` 为准（本文件数据覆盖 v0.11.2 – v0.17.1）
 
 ## 一、自动检查（每次 push 与 `npm test` 都跑）
 
@@ -14,16 +14,31 @@
 | `verify-oom-retry.mjs` | 真 OOM 按 4→2→1 重试；`RangeError` / `no available backend` 必须快速失败 |
 | `verify-inference-controller.mjs` | Worker 就绪、初始化失败、**初始化超时**、外部终止四条路径 |
 | `verify-zip.mjs` | STORE 条目、UTF-8 文件名标志、载荷 CRC |
-| `vite build` | 生产构建通过（bundle 约 135 kB） |
+| `verify-batch-limits.mjs` | 批次上限纯函数：40 张/200MB 边界闭区间、超限原因与文案 |
+| `vite build` | 生产构建通过（bundle 约 136 kB） |
+| `verify-build-entry.mjs` | `dist/` 只引用固定入口 `assets/app.js` / `app.css` 且带 14 位构建参数；两个旧入口迁移文件就位 |
 
 CI 分两层：
 
-- **`Deploy GitHub Pages`** —— `npm test` + **浏览器 UI 断言（部署门禁）**，两者都在 `build` job 内、
-  `deploy` 之前。断言失败则整个 job 失败，**Pages 不会更新**。
-- **`Browser UI check (PR)`** —— 只在 PR 上跑同一套断言（不部署）。
+- **`Deploy GitHub Pages`** —— `npm test` + **三组浏览器断言（部署门禁）**，都在 `build` job 内、
+  `upload-pages-artifact` 之前。断言失败则整个 job 失败，**Pages 不会更新**：
+  1. `browser-ui-check.mjs` —— UI/文案/布局
+  2. `browser-boundary-check.mjs` —— 原图字节一致 / 超限追加原子拒绝 / 损坏首图不拖垮整批
+  3. `browser-stale-entry-check.mjs` —— 旧入口迁移桥能到达新版且不循环刷新
+- **`Browser UI check (PR)`** —— 只在 PR 上跑同一套三组断言（不部署）。
 
 浏览器断言跑在 `vite preview` 的**构建产物**上，不是 `npm run dev` 的源码 ——
 tree-shaking、压缩、`import.meta.env` 替换、`?worker&inline` 这些只在构建后才成形。
+
+### 入口固定与旧入口迁移桥（v0.17.1 起）
+
+入口 JS 救不了「入口 JS 已经 404」：旧版入口带内容哈希，新部署会删掉旧哈希文件，
+于是拿着缓存 HTML 的用户白屏，连版本检查都跑不起来。现在：
+
+- 构建入口固定为 `assets/app.js` / `assets/app.css`，新旧内容靠 `?v=<14 位构建版本>` 区分；
+- 版本不一致时不再 `location.reload()`，而是加 `app-build=<版本>` 后 `location.replace()` 换文档 URL；
+- `public/assets/index-DiAJy31j.js`（迁移桥）与 `index-BlVSS6-9.css`（线上真实字节）
+  为一个过渡期的跳板。⚠️ **至少保留数个版本再删** —— 总有用户拿着很久以前的缓存页面回来。
 
 ## 二、规则一致性（与 Mac 版 Python 检测器对照）
 
@@ -128,6 +143,28 @@ Gemini 不在该基准内（Mac 版是另一套实现），单独验收；移植
 | 整批都已完成 → 刷新恢复 | 不预热模型 | ✅ 只有 1 条基线日志 |
 | 含未处理项 → 刷新恢复 | 照常预热 | ✅ 日志数 ≥ 2 |
 
+### v0.17.1：四项行为修复的验收（全部跑在 `vite preview` 的构建产物上）
+
+| 项 | 判据 | 实测 |
+| --- | --- | --- |
+| 保持原图 = 原始字节 | 128×128 无水印 JPEG 经处理后，IndexedDB 结果与输入的**长度 + SHA-256** 完全一致；ZIP「原图」条目逐字节一致、CRC 通过 | ✅ 2381 字节 / sha256 一致 |
+| 超限追加原子拒绝 | 已有 1 张结果时追加 40 张 → 指定文案、队列不变、`images`/`results` 不变、输入框清空、无模型请求 | ✅ 全部符合 |
+| 损坏首图逐项隔离 | 损坏 JPEG + 有效 JPEG → 1 失败 + 1 有效；刷新后队列 2 张、结果 1 条、可预览/下载/进 ZIP，且不出现「浏览器清理」之说 | ✅ 全部符合 |
+| 旧入口迁移桥 | 用旧迁移入口的 HTML 打开 → 最终 URL 带 `app-build=<14位>`、显示当前 semver、状态「等待选择图片」、资源顺序为桥 → `app.js?v=…`、0 异常 | ✅ 10/10 |
+
+20 张真实混合样张回归（`browser-batch-regression.mjs`，中途强制刷新）：
+
+| 阶段 | 实测 |
+| --- | --- |
+| 完成 2 张后强制刷新 | 恢复 20 张任务 + 2 个结果（待处理 18，与结果数自洽） |
+| 继续处理剩余 | 已处理 16 · 未识别 4 · **失败 0** |
+| 整批完成后再刷新 | 20/20 全部还原，无条目被打回待处理 |
+| 已完成批次 | 未重建推理会话（仅 1 条基线日志）、未下载任何模型分片 |
+| ZIP | 20 项、73.7 MB、CRC 全部通过；4 个「原图」条目与输入逐字节一致 |
+
+回归的 4 张「未识别」里含 `IMG_7830/7831.WEBP`（清言既有判定）与两张 `clean_gemini_*` 干净样本 ——
+前者顺带验证了「原图后缀保持 `.webp`，不会被改写成 `.png`」。
+
 ## 六、发布核对
 
 每次发布两个地址后固定做三项：
@@ -164,6 +201,16 @@ node scripts/browser-restore-check.mjs <url> <样张1> <样张2> <样张3>
 
 # UI/文案/布局断言（CDP，可指向线上地址）
 node scripts/browser-ui-check.mjs
+
+# 边界行为（字节一致性 / 超限原子拒绝 / 损坏首图隔离）；只跑构建产物
+TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-boundary-check.mjs
+
+# 旧入口迁移桥：缓存里的旧 HTML 是否仍能到达新版
+TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-stale-entry-check.mjs
+
+# 20 张真实图片回归（中途强制刷新 + ZIP 逐字节比对；需本机测试集，不进 CI）
+TEST_URL_PREFIX=http://127.0.0.1:4173 \
+  node scripts/browser-batch-regression.mjs "/Users/kunlun/Downloads/水印测试集" 20
 ```
 
 性能读数**只打印、不断言** —— 绝对值依赖机器与图片，硬断言会变成 flaky 测试。
