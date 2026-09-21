@@ -202,7 +202,17 @@ let generatedJpeg = null
 
 try {
   await page.goto(base, { waitUntil: 'load', timeout: 180000 })
-  await page.reload({ waitUntil: 'load', timeout: 180000 })
+  // ⚠️ 不要主动 reload。GitHub Pages 不执行仓库里的 _headers，跨源隔离要靠
+  // coi-serviceworker 注册后**自行** reload 一次才生效；再补一次 reload 会与它撞车
+  // （net::ERR_ABORTED / frame detached），整段测试直接中断。
+  // 本地 vite preview 直接给响应头，第一次导航就已隔离，这个循环会立刻退出。
+  let isolated = false
+  for (let attempt = 0; attempt < 40; attempt++) {
+    isolated = await page.evaluate(() => crossOriginIsolated).catch(() => false)
+    if (isolated) break
+    await page.waitForTimeout(1000)
+  }
+  check('页面已跨源隔离（ORT 多线程前提）', isolated === true)
   await page.waitForTimeout(1500)
   await clearList()
 
