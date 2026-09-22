@@ -1,392 +1,209 @@
-/**
- * 边界行为浏览器验证（针对稳定版 v0.17.x 的三项修复）。
- *
- * 用法：TEST_URL_PREFIX=http://127.0.0.1:4173 node scripts/browser-boundary-check.mjs
- *
- * 三组断言，全部**按行为验收**，不看代码下结论：
- *
- *  1) 「保持原图」必须保持原始字节
- *     浏览器现生成一张 128×128 无水印 JPEG → 记录长度与 SHA-256 →
- *     走完整处理流程（应判「未识别」）→ 从 IndexedDB 读回结果比对长度与 SHA-256 →
- *     再导出 ZIP，比对「原图」条目与输入逐字节一致、CRC 正确。
- *     ⚠️ 「视觉上看不出区别」不算通过。
- *
- *  2) 超限追加原子拒绝
- *     已有 1 张完成结果时追加 40 张 → 整批拒绝。
- *     面板出现指定文案、队列不变、IndexedDB 的 images/results 都不变、
- *     文件输入框被清空、没有启动模型预热。
- *
- *  3) 损坏首图不能清空整批
- *     第 1 张为零字节以外的**无法解码** JPEG、第 2 张有效无水印 JPEG →
- *     处理后 1 张失败 + 1 张有效 → 刷新后队列仍 2 张、结果仍 1 条，
- *     有效那张可预览/可下载/可进 ZIP，且页面不出现「浏览器清理了数据」。
- *
- * 模型请求全程拦截（本地 /models/、jsDelivr、HuggingFace、备用 Pages）：
- * 这组边界用例全是不需要推理的干净图，下载 62MB 模型毫无意义。
- */
-import { chromium } from 'playwright'
+import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-const base = process.argv[2] || process.env.TEST_URL_PREFIX || 'http://127.0.0.1:4173'
-const sha256 = buffer => createHash('sha256').update(buffer).digest('hex')
+const port = Number(process.env.CDP_PORT || 9223)
+const targetPrefix = process.env.TEST_URL_PREFIX || 'http://localhost:4173'
+const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+const target = targets.find(item => item.type === 'page' && item.url.startsWith(targetPrefix))
+if (!target) throw new Error(`No page found for ${targetPrefix}`)
 
-let failed = 0
-const checks = []
-const check = (label, ok, extra = '') => {
-  checks.push([label, ok, extra])
-  if (!ok) failed++
-}
+const socket = new WebSocket(target.webSocketDebuggerUrl)
+await new Promise((resolve, reject) => {
+  socket.addEventListener('open', resolve, { once: true })
+  socket.addEventListener('error', reject, { once: true })
+})
 
-/* ---------------- ZIP 解析（STORE 方法，内容即原始字节） ---------------- */
-
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256)
-  for (let i = 0; i < 256; i++) {
-    let value = i
-    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
-    table[i] = value >>> 0
+let nextId = 1
+const pending = new Map()
+const browserErrors = []
+socket.addEventListener('message', event => {
+  const message = JSON.parse(event.data)
+  if (message.id) {
+    const waiter = pending.get(message.id)
+    if (!waiter) return
+    pending.delete(message.id)
+    if (message.error) waiter.reject(new Error(message.error.message))
+    else waiter.resolve(message.result)
+    return
   }
-  return table
-})()
-const crc32 = bytes => {
-  let crc = 0xffffffff
-  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
-  return (crc ^ 0xffffffff) >>> 0
-}
-
-function readZipEntries(buffer) {
-  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-  const decoder = new TextDecoder()
-  const entries = []
-  let offset = 0
-  while (offset + 30 <= buffer.byteLength && view.getUint32(offset, true) === 0x04034b50) {
-    const method = view.getUint16(offset + 8, true)
-    const declaredCrc = view.getUint32(offset + 14, true)
-    const size = view.getUint32(offset + 18, true)
-    const nameLength = view.getUint16(offset + 26, true)
-    const extraLength = view.getUint16(offset + 28, true)
-    const name = decoder.decode(buffer.subarray(offset + 30, offset + 30 + nameLength))
-    const dataStart = offset + 30 + nameLength + extraLength
-    const bytes = buffer.subarray(dataStart, dataStart + size)
-    entries.push({ name, method, declaredCrc, bytes, crcOk: crc32(bytes) === declaredCrc })
-    offset = dataStart + size
+  if (message.method === 'Runtime.exceptionThrown') {
+    browserErrors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text)
   }
-  return entries
-}
-
-/* ---------------- 夹具 ---------------- */
-
-// 损坏 JPEG：有正确的 SOI/APP0 头、长度非零，但没有 SOF/SOS、也没有 EOI。
-// 特意不用「零字节文件」——零字节是新选择时会被直接丢弃的另一条路径，
-// 这里要验的是「看起来像文件、其实解不开」这种更隐蔽的损坏。
-const corruptJpeg = Buffer.concat([
-  Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]),
-  Buffer.from('JFIF\0', 'latin1'),
-  Buffer.from([0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]),
-  Buffer.from(Array.from({ length: 640 }, (_, index) => (index * 37) % 256)),
-])
-
-/* ---------------- 浏览器 ---------------- */
-
-// CI 里由 workflow 传 CHROME_PATH（用探测到的系统 Chrome，免去再下一次浏览器）；
-// 本地默认走 channel:'chrome'，与仓库其它浏览器脚本保持一致。
-const browser = await chromium.launch(process.env.CHROME_PATH
-  ? { executablePath: process.env.CHROME_PATH }
-  : { channel: 'chrome' })
-const context = await browser.newContext({
-  viewport: { width: 1280, height: 1000 },
-  deviceScaleFactor: 1,
-  acceptDownloads: true,
-})
-const page = await context.newPage()
-
-const pageErrors = []
-page.on('pageerror', error => pageErrors.push(String(error)))
-const modelHits = []
-page.on('request', request => {
-  const url = request.url()
-  if (/\/models\/|cdn\.jsdelivr\.net|huggingface\.co/.test(url)) modelHits.push(url)
-})
-
-// 双保险拦截模型请求：
-//  · page.route 负责「看得见」（计入 modelHits，能断言有没有被尝试）
-//  · CDP setBlockedURLs 在网络层拦死（连 Service Worker 发起的请求也拦得住）
-await page.route('**/*', route => {
-  const url = route.request().url()
-  if (/\/models\/|cdn\.jsdelivr\.net|huggingface\.co/.test(url)) return route.abort()
-  return route.continue()
-})
-const cdp = await context.newCDPSession(page)
-await cdp.send('Network.enable')
-await cdp.send('Network.setBlockedURLs', {
-  urls: ['*://*/models/*', '*cdn.jsdelivr.net*', '*huggingface.co*', '*lama-watermark.app.workbuddy.host*'],
-})
-
-const statusText = () => page.evaluate(() => (document.querySelector('#status')?.textContent || '').trim())
-const selectedName = () => page.evaluate(() => (document.querySelector('#selected-name')?.textContent || '').trim())
-const queueStates = () => page.evaluate(() => [...document.querySelectorAll('#queue > li')].map(row => ({
-  name: (row.querySelector('.q-name')?.textContent || '').trim(),
-  state: (row.querySelector('.q-state')?.textContent || '').trim(),
-  hasActions: !!row.querySelector('.q-actions button, .q-actions a'),
-})))
-
-const waitForBatchEnd = async (timeout = 300000) => {
-  try {
-    await page.waitForFunction(() => /批量处理完成|已停止/.test(document.querySelector('#status')?.textContent || ''), { timeout })
-  } catch {
-    console.log(`  ⚠ 未在时限内结束，当前状态：${await statusText()}`)
+  if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+    browserErrors.push(message.params.args.map(arg => arg.value || arg.description).join(' '))
   }
+})
+
+function send(method, params = {}) {
+  const id = nextId++
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject })
+    socket.send(JSON.stringify({ id, method, params }))
+  })
 }
 
-/** 清空上一批（走真实按钮，顺带验证它确实会删库） */
-const clearList = async () => {
-  await page.evaluate(() => { const button = document.querySelector('#clear'); if (button && !button.hidden) button.click() })
-  await page.waitForTimeout(800)
+async function evaluate(expression) {
+  const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
+  return result.result.value
 }
 
-/** 等模型请求安静下来：选图后应用会主动预热模型（既有行为），
- *  必须等这波重试彻底停息，之后的新请求才能算到「本次动作」头上。 */
-const waitForQuietModels = async (quietMs = 3000, maxMs = 45000) => {
+const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+async function waitFor(read, predicate, timeoutMs, label) {
   const started = Date.now()
-  let last = modelHits.length
-  let quietSince = Date.now()
-  while (Date.now() - started < maxMs) {
-    await page.waitForTimeout(250)
-    if (modelHits.length !== last) { last = modelHits.length; quietSince = Date.now() }
-    if (Date.now() - quietSince >= quietMs) return true
+  let value
+  while (Date.now() - started < timeoutMs) {
+    try { value = await read() } catch { /* reload 中执行上下文会短暂失效 */ }
+    if (value && predicate(value)) return value
+    await sleep(250)
   }
-  return false
+  throw new Error(`${label} timed out; last value: ${JSON.stringify(value)}`)
 }
 
-/** 读 IndexedDB：原图批次条数、结果条数，以及每条结果的长度与 SHA-256 */
-const readDatabase = () => page.evaluate(async () => {
+const pageState = () => evaluate(`(() => ({
+  ready: document.readyState,
+  queue: document.querySelectorAll('#queue > li').length,
+  results: document.querySelectorAll('#queue .q-actions button').length,
+  failed: document.querySelectorAll('#queue > li.failed').length,
+  status: document.querySelector('#status')?.textContent || '',
+  selected: document.querySelector('#selected-name')?.textContent || '',
+  runDisabled: document.querySelector('#run-batch')?.disabled,
+}))()`)
+
+const databaseState = () => evaluate(`(async () => {
   const database = await new Promise((resolve, reject) => {
     const request = indexedDB.open('lama-iphone-poc', 2)
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' })
-      if (!db.objectStoreNames.contains('results')) db.createObjectStore('results', { keyPath: 'id' })
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  try {
+    const batch = await new Promise((resolve, reject) => {
+      const request = database.transaction('images', 'readonly').objectStore('images').get('batch')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const results = await new Promise((resolve, reject) => {
+      const request = database.transaction('results', 'readonly').objectStore('results').getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const hashes = []
+    for (const result of results) {
+      const bytes = await result.outputBlob.arrayBuffer()
+      const digest = await crypto.subtle.digest('SHA-256', bytes)
+      hashes.push({
+        id: result.id,
+        size: result.outputBlob.size,
+        hash: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join(''),
+        status: result.status,
+      })
     }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
-  const readAll = store => new Promise((resolve, reject) => {
-    const request = database.transaction(store, 'readonly').objectStore(store).getAll()
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
-  })
-  const digest = async blob => {
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    const hash = await crypto.subtle.digest('SHA-256', bytes)
-    return { size: bytes.byteLength, sha256: [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('') }
+    return { batch: batch?.files?.length || 0, results: results.length, hashes }
+  } finally {
+    database.close()
   }
-  const [images, results] = await Promise.all([readAll('images'), readAll('results')])
-  database.close()
-  const batch = images.find(record => record.id === 'batch')
-  return {
-    imageFiles: batch?.files?.length || 0,
-    imageIds: batch?.ids?.length || 0,
-    imageNames: (batch?.files || []).map(entry => entry.name),
-    resultCount: results.length,
-    results: await Promise.all(results.map(async record => ({
-      id: record.id,
-      status: record.status,
-      outputExt: record.outputExt,
-      ...(record.outputBlob ? { output: await digest(record.outputBlob) } : {}),
-    }))),
-  }
+})()`)
+
+async function clearPage() {
+  await evaluate(`(() => {
+    const button = document.querySelector('#clear')
+    if (button && !button.hidden) button.click()
+    return true
+  })()`)
+  await waitFor(pageState, value => value.queue === 0, 30000, 'clear batch')
+}
+
+async function selectFiles(files) {
+  const documentNode = await send('DOM.getDocument', { depth: 1 })
+  const input = await send('DOM.querySelector', { nodeId: documentNode.root.nodeId, selector: '#file-input' })
+  await send('DOM.setFileInputFiles', { nodeId: input.nodeId, files })
+}
+
+await send('Runtime.enable')
+await send('DOM.enable')
+await send('Page.enable')
+await send('Network.enable')
+await send('Network.setBlockedURLs', {
+  urls: ['*cdn.jsdelivr.net*', '*huggingface.co*', '*kunlun7210.github.io/lama-watermark-web/*'],
 })
+await waitFor(pageState, value => value.ready === 'complete', 30000, 'page ready')
+await clearPage()
 
-let generatedJpeg = null
-
-try {
-  await page.goto(base, { waitUntil: 'load', timeout: 180000 })
-  // ⚠️ 不要主动 reload。GitHub Pages 不执行仓库里的 _headers，跨源隔离要靠
-  // coi-serviceworker 注册后**自行** reload 一次才生效；再补一次 reload 会与它撞车
-  // （net::ERR_ABORTED / frame detached），整段测试直接中断。
-  // 本地 vite preview 直接给响应头，第一次导航就已隔离，这个循环会立刻退出。
-  let isolated = false
-  for (let attempt = 0; attempt < 40; attempt++) {
-    isolated = await page.evaluate(() => crossOriginIsolated).catch(() => false)
-    if (isolated) break
-    await page.waitForTimeout(1000)
+const fixtureDirectory = await mkdtemp(join(tmpdir(), 'lama-boundary-'))
+const jpegDataUrl = await evaluate(`(() => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const context = canvas.getContext('2d')
+  const image = context.createImageData(128, 128)
+  for (let y = 0; y < 128; y++) {
+    for (let x = 0; x < 128; x++) {
+      const offset = (y * 128 + x) * 4
+      image.data[offset] = (x * 3 + y) % 256
+      image.data[offset + 1] = (x + y * 5) % 256
+      image.data[offset + 2] = (x * 7 + y * 11) % 256
+      image.data[offset + 3] = 255
+    }
   }
-  check('页面已跨源隔离（ORT 多线程前提）', isolated === true)
-  await page.waitForTimeout(1500)
-  await clearList()
-
-  // 浏览器现场生成 128×128 无水印 JPEG：渐变 + 几个柔和的圆，不含任何平台水印特征
-  generatedJpeg = Buffer.from(await page.evaluate(async () => {
-    const canvas = document.createElement('canvas')
-    canvas.width = canvas.height = 128
-    const context = canvas.getContext('2d')
-    const gradient = context.createLinearGradient(0, 0, 128, 128)
-    gradient.addColorStop(0, '#3f6d9e')
-    gradient.addColorStop(0.5, '#8fb7c9')
-    gradient.addColorStop(1, '#e8d9b8')
-    context.fillStyle = gradient
-    context.fillRect(0, 0, 128, 128)
-    context.globalAlpha = 0.25
-    context.fillStyle = '#ffffff'
-    context.beginPath(); context.arc(38, 44, 22, 0, Math.PI * 2); context.fill()
-    context.beginPath(); context.arc(92, 86, 28, 0, Math.PI * 2); context.fill()
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
-    return [...new Uint8Array(await blob.arrayBuffer())]
-  }))
-  const cleanSha = sha256(generatedJpeg)
-  console.log(`夹具：无水印 JPEG ${generatedJpeg.length} 字节 · sha256 ${cleanSha.slice(0, 16)}…`)
-
-  /* ================= 一、「保持原图」的字节一致性 ================= */
-  console.log('\n=== 一、「保持原图」必须保持原始字节 ===')
-  await page.setInputFiles('#file-input', [{ name: 'boundary-clean.jpg', mimeType: 'image/jpeg', buffer: generatedJpeg }])
-  await page.waitForTimeout(1200)
-  await page.click('#run-batch')
-  await waitForBatchEnd()
-
-  const cleanQueue = await queueStates()
-  check('无水印 JPEG 被判「未识别 · 保持原图」',
-    cleanQueue.length === 1 && /未识别水印 · 保持原图/.test(cleanQueue[0].state), cleanQueue[0]?.state)
-  // 未识别路径不建会话是由「处理没有被模型请求卡住」间接证明的：
-  // 模型全程被拦，一旦要推理就会抛错变 failed，而这里顺利跑成了「未识别」。
-  console.log(`  · 过程中的模型请求尝试 ${modelHits.length} 次（均为选图后的既有预热，已被拦截）`)
-
-  const afterClean = await readDatabase()
-  const cleanResult = afterClean.results[0]
-  check('结果已写入 IndexedDB', afterClean.resultCount === 1 && !!cleanResult?.output)
-  check('IndexedDB 里的结果与输入长度一致',
-    cleanResult?.output?.size === generatedJpeg.length, `${cleanResult?.output?.size} vs ${generatedJpeg.length}`)
-  check('IndexedDB 里的结果与输入 SHA-256 一致',
-    cleanResult?.output?.sha256 === cleanSha,
-    `${String(cleanResult?.output?.sha256).slice(0, 16)}… vs ${cleanSha.slice(0, 16)}…`)
-  check('输出后缀保持原后缀 .jpg', cleanResult?.outputExt === '.jpg', String(cleanResult?.outputExt))
-
-  const [zipDownload] = await Promise.all([
-    page.waitForEvent('download', { timeout: 120000 }),
-    page.click('#save-all'),
-  ])
-  const singleZip = await readFile(await zipDownload.path())
-  const singleEntries = readZipEntries(singleZip)
-  const originalEntry = singleEntries.find(entry => entry.name.startsWith('原图-'))
-  check('ZIP 中有「原图」条目', singleEntries.length === 1 && !!originalEntry, singleEntries.map(entry => entry.name).join(', '))
-  check('ZIP 条目的 CRC 正确', originalEntry?.crcOk === true)
-  check('ZIP「原图」条目与输入逐字节一致',
-    !!originalEntry && originalEntry.bytes.length === generatedJpeg.length
-      && sha256(originalEntry.bytes) === cleanSha)
-
-  /* ================= 二、超限追加原子拒绝 ================= */
-  console.log('\n=== 二、超限追加原子拒绝（1 张已完成 + 追加 40 张）===')
-  const beforeAppend = await readDatabase()
-  const quiet = await waitForQuietModels()
-  check('追加前模型请求已停息（后续计数才算本次追加的）', quiet === true)
-  const hitsBeforeAppend = modelHits.length
-  const appendFiles = Array.from({ length: 40 }, (_, index) => ({
-    name: `append-${String(index + 1).padStart(2, '0')}.jpg`,
-    mimeType: 'image/jpeg',
-    buffer: generatedJpeg,
-  }))
-  await page.setInputFiles('#file-input', appendFiles)
-  await page.waitForTimeout(2500)
-
-  const appendStatus = await statusText()
-  const appendQueue = await queueStates()
-  const afterAppend = await readDatabase()
-  const inputFiles = await page.evaluate(() => document.querySelector('#file-input')?.files?.length ?? -1)
-  const downloadBarHidden = await page.evaluate(() => !!document.querySelector('#download-bar')?.hidden)
-
-  check('页面显示指定的拒绝文案',
-    appendStatus === '无法追加：超过 40 张；现有 1 张及结果已保留', appendStatus)
-  check('队列没有被追加（仍为 1 张）', appendQueue.length === 1)
-  check('IndexedDB 原图批次未被改动',
-    afterAppend.imageFiles === beforeAppend.imageFiles && afterAppend.imageIds === beforeAppend.imageIds
-      && afterAppend.imageNames.join(',') === beforeAppend.imageNames.join(','),
-    `${afterAppend.imageFiles} 张`)
-  check('IndexedDB 结果未被改动（未被清空）',
-    afterAppend.resultCount === beforeAppend.resultCount && afterAppend.resultCount === 1)
-  check('文件输入框已清空（可再次触发 change）', inputFiles === 0, String(inputFiles))
-  check('没有启动模型预热（无模型请求、无下载条）',
-    modelHits.length === hitsBeforeAppend && downloadBarHidden,
-    `模型请求 +${modelHits.length - hitsBeforeAppend}`)
-
-  /* ================= 三、损坏首图不能清空整批 ================= */
-  console.log('\n=== 三、损坏首图 + 有效次图 ===')
-  await clearList()
-  const undecodable = await page.evaluate(async bytes => {
-    const file = new File([new Uint8Array(bytes)], 'probe.jpg', { type: 'image/jpeg' })
-    try {
-      const bitmap = await createImageBitmap(file)
-      bitmap.close?.()
-      return false
-    } catch { return true }
-  }, [...corruptJpeg])
-  check('夹具确实无法解码（前置自检）', undecodable === true)
-
-  await page.setInputFiles('#file-input', [
-    { name: 'boundary-broken.jpg', mimeType: 'image/jpeg', buffer: corruptJpeg },
-    { name: 'boundary-valid.jpg', mimeType: 'image/jpeg', buffer: generatedJpeg },
-  ])
-  await page.waitForTimeout(1500)
-  await page.click('#run-batch')
-  await waitForBatchEnd()
-
-  const mixedQueue = await queueStates()
-  check('两张都留在队列里', mixedQueue.length === 2, `${mixedQueue.length} 张`)
-  check('第一张（损坏）单独失败，未连累第二张',
-    /失败/.test(mixedQueue[0]?.state || '') && /未识别水印|已去除/.test(mixedQueue[1]?.state || ''),
-    mixedQueue.map(row => row.state).join(' | '))
-
-  const beforeRefresh = await readDatabase()
-  check('IndexedDB 原图批次 = 2 条', beforeRefresh.imageFiles === 2, String(beforeRefresh.imageFiles))
-  check('IndexedDB 结果 = 1 条（只有有效那张）', beforeRefresh.resultCount === 1, String(beforeRefresh.resultCount))
-
-  await page.reload({ waitUntil: 'load', timeout: 180000 })
-  await page.waitForTimeout(4000)
-  const restoredQueue = await queueStates()
-  const restoredDb = await readDatabase()
-  const bodyText = await page.evaluate(() => document.body.innerText)
-
-  check('刷新后队列仍为 2 张（坏图没有拖垮整批）', restoredQueue.length === 2, `${restoredQueue.length} 张`)
-  check('刷新后有效那张的结果仍在', restoredQueue[1]?.state.includes('未识别水印') || restoredQueue[1]?.state.includes('已去除'), restoredQueue[1]?.state)
-  check('刷新后 IndexedDB 原图批次仍为 2 条', restoredDb.imageFiles === 2, String(restoredDb.imageFiles))
-  check('刷新后 IndexedDB 结果仍为 1 条', restoredDb.resultCount === 1, String(restoredDb.resultCount))
-  check('页面没有出现「浏览器清理了数据」的说辞', !bodyText.includes('浏览器清理'), '')
-
-  // 有效那张：可预览（点开画到 canvas）、可下载（有存图/下载入口）、可进 ZIP
-  await page.evaluate(() => { const rows = document.querySelectorAll('#queue > li'); rows[rows.length - 1]?.click() })
-  await page.waitForTimeout(1500)
-  const preview = await page.evaluate(() => {
-    const canvas = document.querySelector('#result')
-    if (!canvas || !canvas.width) return { width: 0, painted: false }
-    const data = canvas.getContext('2d').getImageData(0, 0, Math.min(canvas.width, 32), Math.min(canvas.height, 32)).data
-    let painted = false
-    for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) { painted = true; break }
-    return { width: canvas.width, painted }
-  })
-  check('刷新后结果可预览（画布有内容）', preview.width === 128 && preview.painted === true, JSON.stringify(preview))
-  check('结果条目带可下载/存图入口', restoredQueue[1]?.hasActions === true)
-
-  const [restoredZipDownload] = await Promise.all([
-    page.waitForEvent('download', { timeout: 120000 }),
-    page.click('#save-all'),
-  ])
-  const restoredZipEntries = readZipEntries(await readFile(await restoredZipDownload.path()))
-  const restoredEntry = restoredZipEntries.find(entry => entry.name.startsWith('原图-'))
-  check('ZIP 只含 1 个「原图」条目（坏图没有结果，不该混进去）',
-    restoredZipEntries.length === 1 && !!restoredEntry, restoredZipEntries.map(entry => entry.name).join(', '))
-  check('刷新恢复后的 ZIP 条目仍与输入逐字节一致',
-    !!restoredEntry && sha256(restoredEntry.bytes) === cleanSha)
-  check('刷新恢复后的 ZIP 条目 CRC 正确', restoredEntry?.crcOk === true)
-} finally {
-  await browser.close()
+  context.putImageData(image, 0, 0)
+  return canvas.toDataURL('image/jpeg', 0.91)
+})()`)
+const jpegBytes = Buffer.from(jpegDataUrl.split(',')[1], 'base64')
+const expectedHash = createHash('sha256').update(jpegBytes).digest('hex')
+const cleanFile = join(fixtureDirectory, 'clean-original.jpg')
+const badFile = join(fixtureDirectory, 'bad-first.jpg')
+await writeFile(cleanFile, jpegBytes)
+await writeFile(badFile, 'not a decodable image')
+const overflowFiles = []
+for (let index = 0; index < 40; index++) {
+  const file = join(fixtureDirectory, `overflow-${String(index).padStart(2, '0')}.jpg`)
+  await writeFile(file, jpegBytes)
+  overflowFiles.push(file)
 }
 
-/* ---------------- 汇总 ---------------- */
-console.log('\n=== 结果 ===')
-for (const [label, ok, extra] of checks) {
-  console.log(`  ${ok ? '✓' : '✗'} ${label}${extra ? ` — ${extra}` : ''}`)
-}
-console.log(`\n未捕获的页面异常 ${pageErrors.length} 条${pageErrors.length ? '：' + pageErrors.join(' | ') : ''}`)
-console.log(`模型请求尝试 ${modelHits.length} 次，全部已被拦截（预热重试所致；本组用例不需要模型）`)
-if (pageErrors.length) failed++
-if (failed) throw new Error(`边界检查有 ${failed} 项未通过`)
-console.log('\n✅ 边界行为全部符合预期（字节一致 / 原子拒绝 / 逐项隔离）')
+// P2：未识别 JPEG 的结果必须和输入逐字节一致。
+await selectFiles([cleanFile])
+await waitFor(pageState, value => value.queue === 1 && !value.runDisabled, 30000, 'select clean JPEG')
+await evaluate(`document.querySelector('#run-batch').click(); true`)
+await waitFor(pageState, value => value.queue === 1 && value.results === 1 && /批量处理完成/.test(value.status), 60000, 'process clean JPEG')
+const exactOriginal = await databaseState()
+assert.equal(exactOriginal.batch, 1)
+assert.equal(exactOriginal.results, 1)
+assert.equal(exactOriginal.hashes[0].status, 'unchanged')
+assert.equal(exactOriginal.hashes[0].size, jpegBytes.length)
+assert.equal(exactOriginal.hashes[0].hash, expectedHash)
+
+// P1：超限追加必须原子拒绝，队列和已完成结果都不能变化。
+await selectFiles(overflowFiles)
+const rejected = await waitFor(pageState, value => /无法追加/.test(value.selected), 30000, 'reject over-limit append')
+assert.equal(rejected.queue, 1)
+assert.equal(rejected.results, 1)
+const afterOverflow = await databaseState()
+assert.equal(afterOverflow.batch, 1)
+assert.equal(afterOverflow.results, 1)
+assert.equal(afterOverflow.hashes[0].hash, expectedHash)
+
+// P1：首张损坏时，刷新仍要保留整批和第二张的有效结果。
+await clearPage()
+await selectFiles([badFile, cleanFile])
+await waitFor(pageState, value => value.queue === 2 && !value.runDisabled, 30000, 'select corrupt + valid')
+await evaluate(`document.querySelector('#run-batch').click(); true`)
+await waitFor(pageState, value => value.queue === 2 && value.results === 1 && value.failed === 1 && /批量处理完成/.test(value.status), 60000, 'process corrupt + valid')
+const beforeReload = await databaseState()
+assert.equal(beforeReload.batch, 2)
+assert.equal(beforeReload.results, 1)
+await evaluate(`location.reload(); true`)
+const restored = await waitFor(pageState, value => value.ready === 'complete' && value.queue === 2 && value.results === 1 && /^已恢复/.test(value.status), 60000, 'restore corrupt + valid')
+const afterReload = await databaseState()
+assert.equal(afterReload.batch, 2)
+assert.equal(afterReload.results, 1)
+assert.equal(afterReload.hashes[0].hash, expectedHash)
+
+await clearPage()
+socket.close()
+console.log(JSON.stringify({ exactOriginal, rejected, afterOverflow, beforeReload, restored, afterReload, browserErrors }, null, 2))
+const unexpectedErrors = browserErrors.filter(error => !error.includes('浏览器的图像解码器打不开这个文件'))
+if (unexpectedErrors.length) throw new Error(`Unexpected browser console errors: ${unexpectedErrors.join('; ')}`)

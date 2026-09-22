@@ -2,21 +2,24 @@ import './style.css'
 import { createRuleEngine } from './rules.js'
 import { gaussianBlur, grayFromRgb, grayFromRgb8 } from './imaging.js'
 import { processGemini } from './gemini.js'
-import { buildZip } from './zip.js'
-import { batchLimitMessage, batchLimitReason } from './batch-limits.js'
-import { InferenceController } from './inference-controller.js'
-import { chooseThreadCount, threadCeiling } from './thread-policy.js'
+import { chooseThreadCount } from './thread-policy.js'
 import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
+import { buildZip } from './zip.js'
+import { InferenceController } from './inference-controller.js'
+import {
+  StorageCapacityError,
+  batchLimitReason,
+  clearStoredJob,
+  deleteResult,
+  loadBatch,
+  loadResult,
+  saveBatch,
+  saveResult,
+} from './job-store.js'
 
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
 // 刷新只影响页面本身，Cache Storage 里的模型缓存原样保留。
-//
-// ⚠️ 必须用 location.replace 换一个**新的文档 URL**（带 app-build=<版本>），不能只 reload()：
-// reload 很可能又拿回同一份被缓存的旧 HTML，刷新完了还是旧的，白刷一次。
-// 换 URL 等于换一个缓存键，新文档必然重新取。
-// 循环保护也落在 URL 上：已经带着同一个 app-build 还发现版本不一致，就只能说明
-// CDN 上 version.json 与 HTML 还没对齐 —— 此时停下，绝不无限刷新。
 void (async () => {
   try {
     const response = await fetch(new URL('version.json', document.baseURI), { cache: 'no-store' })
@@ -24,26 +27,20 @@ void (async () => {
     const { version } = await response.json()
     if (!version || version === APP_VERSION) return
     const url = new URL(location.href)
-    if (url.searchParams.get('app-build') === String(version)) return // 已为该版本换过 URL，防循环
-    url.searchParams.set('app-build', String(version))
-    location.replace(url.toString())
+    if (url.searchParams.get('app-build') === version) return
+    url.searchParams.set('app-build', version)
+    location.replace(url.href)
   } catch { /* 网络不可用时保持现状 */ }
 })()
 
 const MODEL_SIZE = 512
-const IMAGE_DB_NAME = 'lama-iphone-poc'
-const IMAGE_STORE = 'images'
-// v2 起新增 results：把处理结果也落盘，刷新后能直接还原「已完成」而不必重跑。
-// 用 onupgradeneeded 补建 store，老库里的 images 记录不受影响（升级是非破坏的）。
-const IMAGE_DB_VERSION = 2
-const RESULT_STORE = 'results'
 const INFER_TIMEOUT_MS = 120000
+const SESSION_INIT_TIMEOUT_MS = 120000
 const MODEL_CACHE_NAME = 'lama-model-v2'
 const CHUNK_RETRIES = 4
-// 备用镜像：GitHub 仓库经 jsDelivr CDN 分发，国内通常比 github.io 快。
-// ⚠️ 必须钉在 commit hash 上，不能用 @main：jsDelivr 对分支引用只缓存 12 小时、内容会随推送变化，
-// 会出现「CDN 上还是旧文件、清单却已是新的」的校验死循环；commit hash 是永久且不可变的。
-// ⚠️ 模型文件更新后，这里要同步改成包含新文件的那个 commit。
+// 模型保留在本仓库，以原 Pages 地址提供同源兜底；jsDelivr 固定提交镜像与
+// Hugging Face 固定 revision 负责跨线路备用，完整拼装后统一校验 SHA-256。
+const STABLE_MODEL_BASE = 'https://kunlun7210.github.io/lama-watermark-web/'
 const MIRROR_REPO = 'kunlun7210/lama-watermark-web@b7cb12e5a1b74a2cf66372f90375683e567035a3'
 const MODELS = {
   int8: {
@@ -56,7 +53,7 @@ const MODELS = {
   },
   fp32: {
     id: 'fp32',
-    label: 'FP32 · 198MB',
+    label: 'FP32 模型 · 198MB',
     manifest: 'models/fp32/manifest.json',
     inputLayout: 'image-mask',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
@@ -66,7 +63,6 @@ const MODELS = {
 const elements = {
   file: document.querySelector('#file-input'),
   selectedName: document.querySelector('#selected-name'),
-  batchHint: document.querySelector('#batch-hint'),
   runBatch: document.querySelector('#run-batch'),
   stop: document.querySelector('#stop'),
   saveAlbum: document.querySelector('#save-album'),
@@ -85,7 +81,6 @@ const elements = {
   queueSummary: document.querySelector('#queue-summary'),
   picker: document.querySelector('.picker'),
   cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
-  // 主界面「本地 AI 模型」那一行：只展示当前选中的模型，不做选择
   currentModelLabel: document.querySelector('#current-model-label'),
   cacheTagCurrent: document.querySelector('#cache-tag-current'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
@@ -93,12 +88,11 @@ const elements = {
   downloadStatus: document.querySelector('#download-status'),
   downloadLabel: document.querySelector('#download-label'),
   downloadProgress: document.querySelector('#download-progress'),
+  batchHint: document.querySelector('#batch-hint'),
 }
 
 const state = {
   items: [],
-  // 条目 id 由 newItemId() 生成稳定 UUID —— 原来自增序号那套已移除，
-  // 因为它刷新后会重新编号，导致恢复时与落盘的处理结果对不上。
   currentId: null,
   running: false,
   stopRequested: false,
@@ -111,7 +105,7 @@ let sessionPromise = null
 let sessionModelId = null
 /** 正在进行的模型加载的中断器：换模型时用它取消旧任务（未下载完的段不再继续） */
 let sessionAbort = null
-/** 加载代次：只有最新一代允许写回当前 Worker，防止旧任务完成后覆盖新会话 */
+/** 加载代次：只有最新一代允许写回当前 Worker，防止旧任务覆盖新会话 */
 let sessionGeneration = 0
 let ruleEngine = null
 let ruleEnginePromise = null
@@ -119,23 +113,9 @@ let ruleEnginePromise = null
 const assetBase = new URL(import.meta.env.BASE_URL, location.href)
 const ortBase = new URL('ort/', assetBase).href
 
-/**
- * 线程数偏好键。内存不足时把它调低并落盘，下次加载生效。
- * ⚠️ 为什么必须「下次加载生效」而不是当场生效：
- * ONNX Runtime 的 WASM 线程池在 **wasm 模块首次初始化时**建立，
- * 之后再改 `ort.env.wasm.numThreads` 并不会重建线程池 ——
- * 官方文档也要求这些环境参数在创建第一个会话之前设定。
- * 也就是说运行时改数字只是改了个显示值，实际还是原线程数（评价第 3 条）。
- *
- * 现在线程数与整个 WASM 运行环境都搬进了独立 Worker。要换线程数只有一条路：
- * terminate 掉旧 Worker、重建一个新的（见 releaseActiveSession）。
- * 这反而是好事 —— 重建是「真正的初始化」，不再有「改了数字但线程池没重建」的陷阱。
- */
+// 沿用原 lama-watermark-web 的键，升级到 v1.0.0 后继续识别既有缓存与恢复偏好。
 const LEGACY_THREAD_PREF_KEY = 'lama-threads'
-// 每张图的实测耗时会按模型分别记在这里，供「预计时间」估算使用。
-// ⚠️ 前缀按本仓既有约定用 `lama-`（与 lama-restore 一致），不是参考仓库的 `lama-next-`：
-// 两站同源（同一 GitHub Pages 域），若共用同一个键，任何一站的耗时都会写进另一站的估算里 ——
-// 两套流水线各自的真实耗时不该互相污染。
+const RESTORE_PREF_KEY = 'lama-restore'
 const TIMING_KEY_PREFIX = 'lama-seconds-'
 
 // 旧版会把一次偶发 OOM 永久写进 localStorage，导致设备以后一直停在 1/2 线程。
@@ -148,23 +128,11 @@ function preferredThreads() {
   return chooseThreadCount(crossOriginIsolated, navigator.hardwareConcurrency, runtimeThreadCap)
 }
 
-/** 当前 Worker 实际使用的线程数。线程数跟随会话，换线程数 = 重建 Worker */
 let currentThreads = preferredThreads()
 
 const selectedModel = () => MODELS[elements.modelInputs.find(input => input.checked)?.value || 'int8']
 const currentItem = () => state.items.find(item => item.id === state.currentId) || null
 
-/*
- * ↓↓↓ 预计时间：以下三个函数**逐字节**移植自参考实现
- *     lama-watermark-web-next @ 82a737f（src/main.js 的 timingSeconds / rememberTiming / updateBatchHint）。
- *
- * 为什么要照抄而不是自己写：估算规则里全是细节 —— 每张秒数用指数平滑、<60 秒说「秒」、
- * ≥60 秒向上取整说「分钟」、张数为 0 时隐藏、文案里的空格与全角分号位置……
- * 任何一处走样都会和用户已经习惯的那个版本对不上（同一台设备上两个站显示不同数字＝像 bug）。
- * scripts/verify-batch-estimate.mjs 会对这三个函数做**逐字节**比对与行为矩阵比对，防止后续被改歪。
- *
- * 与参考实现唯一的差异：TIMING_KEY_PREFIX 的取值（见上面的说明），函数体一字未动。
- */
 function timingSeconds(modelId) {
   const fallback = modelId === 'fp32' ? 40 : 16
   try {
@@ -189,7 +157,7 @@ function updateBatchHint(count = state.items.filter(item => needsProcessing(item
   elements.batchHint.textContent = `${count} 张预计 ${text}；请保持页面在前台，每完成一张会立即保存。`
   elements.batchHint.hidden = false
 }
-/* ↑↑↑ 预计时间：移植段结束（以下为本仓原有实现） */
+/* ↑↑↑ 预计时间：移植段结束（以下为本仓其它实现） */
 
 /**
  * 让界面有机会先画出状态文字，再去做会阻塞主线程的推理。
@@ -223,16 +191,9 @@ function setMetrics(values) {
     box.append(dt, dd)
     return box
   }))
-  // 没有指标可显示时整块收起来 —— 未选图时只有「识别结果 未处理」这类空信息，
-  // 留着会在第一屏占掉一片位置
   elements.metrics.hidden = entries.length === 0
 }
 
-/**
- * 未选图时预览区只留两个标题条。
- * 空的 canvas 是纯黑方块：占掉大半屏、零信息量，还把页脚的使用说明推到要滚动才看得见。
- * 队列里有图就展开（选图后、恢复缓存后），清空则收回。
- */
 function updatePreviewVisibility() {
   if (!elements.previewGrid) return
   elements.previewGrid.dataset.empty = state.items.length ? 'false' : 'true'
@@ -259,34 +220,17 @@ function setDownloadBar(visible, text, ratio = null, detail = '') {
   else progress.value = Math.max(0, Math.min(1, ratio))
 }
 
-/**
- * 主指标区只回答两件事：识别到哪个平台、这张花了多久。
- * 删掉的那些都有替代、属于内部实现，或信息量太低：
- *   图片尺寸 —— 预览区直接看得到
- *   模型     —— 上方「本地 AI 模型」那行已经写了，重复
- *   线程数   —— 内部实现细节，移进「模型信息」折叠区
- *   本次推理 —— 与「总耗时」是两个含义相近的秒数，留一个就够
- *   区域数   —— 实际只会是 1 或 2（最多即梦两处水印），两种取值不值得占一格
- */
 function displayMetrics(item) {
   if (!item) return {}
   const metrics = {
-    识别结果: item.provider || (item.status === 'pending' ? '未处理' : '未识别'),
+    水印类型: item.provider || (item.status === 'pending' ? '未处理' : '未识别'),
   }
   if (item.elapsed) metrics.总耗时 = item.elapsed
   return metrics
 }
 
-/**
- * 线程数不再显示在界面上 —— 它对用户没有意义（几个线程是内部实现）。
- * 只在控制台留一条：排查性能问题时需要它确认跨源隔离是否生效（4 = 生效，1 = 退回单线程）。
- */
 function logThreadCount(reason = '') {
-  const ceiling = threadCeiling(crossOriginIsolated, navigator.hardwareConcurrency)
-  const degraded = currentThreads < ceiling
-    ? `，本次页面已降级（重开页面即按设备能力重新评估）`
-    : ''
-  console.info(`推理线程：${currentThreads}（4 = 跨源隔离生效，1 = 退回单线程）${degraded}${reason ? ` · ${reason}` : ''}`)
+  console.info(`推理线程：${currentThreads}${reason ? `（${reason}）` : ''}`)
 }
 
 /* ---------------- 模型会话 ---------------- */
@@ -300,7 +244,10 @@ function progressDetail(loaded, total, index, chunkCount, started, sourceLabel) 
   return `分段 ${index}/${chunkCount} · ${(loaded / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB · ${mbps.toFixed(1)} MB/s · 约剩 ${eta}${source}`
 }
 
-/** jsDelivr 镜像地址。注意：它可用作整段下载源，但**不可用于 Range 续传**，见 chunkSources */
+function stableModelUrl(relativePath) {
+  return new URL(relativePath.replace(/^\.?\//, ''), STABLE_MODEL_BASE).href
+}
+
 function mirrorUrl(relativePath) {
   return `https://cdn.jsdelivr.net/gh/${MIRROR_REPO}/public/${relativePath.replace(/^\.?\//, '')}`
 }
@@ -317,27 +264,27 @@ function chunkRelativePath(model, chunk) {
   return (dir + chunk.file).replace(/^\.?\//, '')
 }
 
-function preferOrigin() {
-  return new URLSearchParams(location.search).get('source') === 'origin'
+function preferredDownloadSource() {
+  return new URLSearchParams(location.search).get('source')
 }
 
-/** 三个源，默认顺序：jsDelivr（国内快）→ HuggingFace（模型原始出处，Cloudflare CDN）→ 同源（GitHub Pages）。
- *  rangeOffset：该源的 Range 起点参考系。镜像/同源的分段文件内偏移从 0 计；
- *  HF 是整个 onnx 文件，需用该段在整文件中的偏移（loaded），闭区间保证不下过头。
- *
- *  ⚠️ jsDelivr 必须带 noResume。实测（commit b7cb12e 的线上文件）：
- *  同一文件同一区间请求 `Range: bytes=8000000-8001023`，它返回 206，
- *  但 `Content-Range` 的总长报成 12207070（真实是 16777216），内容与原始文件不符；
- *  而该文件的**全量下载 SHA-256 与本地完全一致** —— 即「文件是对的，Range 是错的」。
- *  它照样返回 206，所以「只接受 206」这种校验挡不住它。
- *  结论：它只能整段下载（速度优势保留），一旦让它在段内续传就会污染数据。 */
-function chunkSources(chunkUrl, relativePath, model, fileOffset) {
+/**
+ * 默认顺序：jsDelivr → HuggingFace → 同源 Pages。
+ * jsDelivr 对整段内容正确且快，但它返回的 Content-Range 总长度不可靠，因此只能从头整段下载，
+ * 不允许段内续传。HF 与 Pages 仍执行严格 Range 校验。
+ */
+function chunkSources(relativePath, model, fileOffset, manifest) {
   const list = [
-    { label: 'jsDelivr', url: mirrorUrl(relativePath), rangeOffset: 0, noResume: true },
-    { label: 'HuggingFace', url: model.hf, rangeOffset: fileOffset },
-    { label: '同源', url: chunkUrl, rangeOffset: 0 },
+    { label: 'jsDelivr', url: mirrorUrl(relativePath), rangeOffset: 0, expectedTotal: null, noResume: true },
+    { label: 'HuggingFace', url: model.hf, rangeOffset: fileOffset, expectedTotal: manifest.totalSize },
+    { label: '同源 Pages', url: stableModelUrl(relativePath), rangeOffset: 0, expectedTotal: null },
   ].filter(source => !!source.url)
-  if (preferOrigin()) list.reverse()
+  const preferred = preferredDownloadSource()
+  if (preferred === 'hf') {
+    const hf = list.find(source => source.label === 'HuggingFace')
+    if (hf) return orderSources([hf, ...list.filter(source => source !== hf)])
+  }
+  if (preferred === 'origin') list.reverse()
   return orderSources(list)
 }
 
@@ -349,11 +296,11 @@ function orderSources(list) {
   return [hit, ...list.filter(source => source !== hit)]
 }
 
-/** 清单本身也默认走镜像：GitHub Pages 在部分网络下会直接连不上 */
 async function fetchManifest(model) {
   const sameOrigin = new URL(model.manifest, assetBase).href
   const mirror = mirrorUrl(model.manifest)
-  const order = preferOrigin() ? [sameOrigin, mirror] : [mirror, sameOrigin]
+  const preferred = preferredDownloadSource()
+  const order = preferred === 'origin' ? [sameOrigin, mirror] : [mirror, sameOrigin]
   let lastError = null
   for (const url of order) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -416,10 +363,7 @@ async function writeCachedChunk(cache, cacheKey, bytes) {
  * 源分两类：镜像/同源的分段文件内偏移从 0 计；HuggingFace 是整文件，rangeOffset 为该段在整文件中的偏移。
  *
  * ⚠️ 续传只在**同一个源内部**成立，两条铁律：
- *  1) 换源必须清零。不同源的同名分片不保证字节一致（jsDelivr 实测会返回错误副本），
- *     把上一个源已收的字节接到新源后面 = 「前半段错 + 后半段对」，只能等 SHA 校验失败后整段重下。
- *     （旧实现只在 status !== 206 时清零，而坏源同样返回 206，所以从来没清过 —— 这就是下载失败的根因。）
- *  2) noResume 的源（jsDelivr）连同一源内的重试也不续传，每次重试都从头下整段。
+ *  换源必须清零。不同源的 Range 参考系和中间缓存行为可能不同，绝不跨源拼接。
  */
 async function downloadChunk(chunk, sources, onProgress, externalSignal) {
   let lastError = null
@@ -434,7 +378,6 @@ async function downloadChunk(chunk, sources, onProgress, externalSignal) {
     for (let attempt = 0; attempt < CHUNK_RETRIES; attempt++) {
       // 外部取消（用户切换模型）：立刻退出，既不重试也不换源
       if (externalSignal?.aborted) throw new Error('模型已切换，下载已取消')
-      // 铁律 2：不支持可靠续传的源，每次重试都重新整段下载
       if (source.noResume) { have = 0; received = [] }
       const controller = new AbortController()
       // 把外部的取消信号接到本次请求上。不用 AbortSignal.any()：
@@ -457,16 +400,19 @@ async function downloadChunk(chunk, sources, onProgress, externalSignal) {
           signal: controller.signal,
         })
         if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`)
-        // 一般只接受 206。但有一个必须放行的例外：**分片式源从头整段下载**。
-        // 某些静态托管（实测 WorkBuddy 静态托管 / app.workbuddy.host）会忽略 Range 头，
-        // 直接返回 200 + 整个文件；而分片文件本身就是我们要的那一段，所以这个 200 是可用的。
-        // 判据必须同时满足两条，否则会误吞 HF 的整文件（那是 62MB/198MB）：
-        //   ① rangeOffset === 0 —— 只对「分片即整段」的源放行；HF 是整文件，偏移不为 0 的段绝不接受
-        //   ② have === 0 —— 只对从头下载放行；续传时对方不支持 Range，只能作废这一段
-        // 后面仍会校验 have === chunk.size，多收少收都会被拦下。
         const selfContainedFromStart = rangeOffset === 0 && have === 0
         if (response.status !== 206 && !(response.status === 200 && selfContainedFromStart)) {
           throw new Error(`该源不支持断点续传（HTTP ${response.status}）`)
+        }
+        if (!source.noResume) {
+          const contentRange = response.headers.get('content-range') || ''
+          const match = contentRange.match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/i)
+          if (response.status === 206 && (!match || Number(match[1]) !== rangeStart || Number(match[2]) !== rangeEnd)) {
+            throw new Error(`Range 响应不匹配：${contentRange || '无 Content-Range'}`)
+          }
+          if (match && source.expectedTotal && match[3] !== '*' && Number(match[3]) !== source.expectedTotal) {
+            throw new Error(`模型总长度不匹配：${match[3]}/${source.expectedTotal}`)
+          }
         }
         const reader = response.body.getReader()
         while (true) {
@@ -505,7 +451,6 @@ async function downloadChunk(chunk, sources, onProgress, externalSignal) {
 
 async function fetchModel(model, signal) {
   try {
-    const manifestUrl = new URL(model.manifest, assetBase).href
     const manifest = await fetchManifest(model)
     if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
 
@@ -520,7 +465,6 @@ async function fetchModel(model, signal) {
       // 每段开始前检查一次：被取消后不要再继续读缓存/下载别的段
       if (signal?.aborted) throw new Error('模型已切换，下载已取消')
       const chunk = manifest.chunks[index]
-      const chunkUrl = new URL(chunk.file, manifestUrl).href
       const relativePath = chunkRelativePath(model, chunk)
 
       const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
@@ -535,7 +479,7 @@ async function fetchModel(model, signal) {
         continue
       }
 
-      const sources = chunkSources(chunkUrl, relativePath, model, loaded)
+      const sources = chunkSources(relativePath, model, loaded, manifest)
       const started = performance.now()
       const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
         currentSource = label
@@ -637,33 +581,38 @@ async function refreshCacheTags() {
     const tag = elements.cacheTags[model.id]
     if (!tag) return
     const status = await modelCacheStatus(model)
-    let text = '', cls = ''
+    let text = ''
+    let className = 'model-cache-tag'
     if (!status.supported) {
       tag.hidden = true
     } else if (status.have === status.total) {
-      text = '已缓存'; cls = 'model-cache-tag cached'
+      tag.hidden = false
+      text = '已缓存'
+      className = 'model-cache-tag cached'
     } else if (status.have === 0) {
-      text = '未缓存'; cls = 'model-cache-tag missing'
+      tag.hidden = false
+      text = '未缓存'
+      className = 'model-cache-tag missing'
     } else {
-      text = `${status.have}/${status.total} 段`; cls = 'model-cache-tag partial'
+      tag.hidden = false
+      text = `${status.have}/${status.total} 段`
+      className = 'model-cache-tag partial'
     }
-    if (!tag.hidden) { tag.textContent = text; tag.className = cls }
-    // 主界面那一行展示的是「当前选中的模型」，缓存状态要跟着它走
+    if (!tag.hidden) {
+      tag.textContent = text
+      tag.className = className
+    }
     if (model.id === selected.id && elements.cacheTagCurrent) {
-      const cur = elements.cacheTagCurrent
-      cur.hidden = !!tag.hidden
-      if (!tag.hidden) { cur.textContent = text; cur.className = cls }
+      elements.cacheTagCurrent.hidden = tag.hidden
+      if (!tag.hidden) {
+        elements.cacheTagCurrent.textContent = text
+        elements.cacheTagCurrent.className = className
+      }
     }
   }))
   if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
 }
 
-/**
- * 推理会话 = 一个独立 Worker。terminate 是唯一真正有效的释放手段：
- * 它同时停掉正在初始化/推理的 ORT，并回收整套 WASM 内存与线程池。
- * 旧的 session.release() 做不到 —— release 不保证中断进行中的 run，
- * 所以「超时」之后主线程照旧卡死、内存也还占着（评价第 3 条）。
- */
 async function releaseActiveSession() {
   inference.terminate(new Error('推理会话已重建'))
   activeModelId = null
@@ -673,9 +622,8 @@ function getSession(model) {
   if (activeModelId === model.id && inference.worker) return Promise.resolve({ model, loadMs: 0, reused: true })
   if (sessionPromise && sessionModelId === model.id) return sessionPromise
 
-  // 换模型：先把上一次仍在进行的加载掐掉。
-  // 否则 62MB 与 198MB 会同时下载、同时校验、同时初始化，iPhone 上内存峰值直接翻倍，
-  // 而且两个任务会争抢同一个 Worker（评价第 3 条）。
+  // Worker 是会话的生命周期边界：换模型、超时或 OOM 时直接 terminate，
+  // 既停止正在初始化/推理的 ORT，也释放整套 WASM 内存与线程池。
   sessionAbort?.abort()
   inference.terminate(new Error('模型已切换，旧推理已终止'))
   activeModelId = null
@@ -687,15 +635,17 @@ function getSession(model) {
   sessionPromise = (async () => {
     await releaseActiveSession()
     const started = performance.now()
-    let bytes = await fetchModel(model, controller.signal)
+    const bytes = await fetchModel(model, controller.signal)
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
     currentThreads = preferredThreads()
-    await inference.initialise({ model, modelBytes: bytes, threads: currentThreads, ortBase })
-    bytes = null
-    // 初始化期间用户可能已经切到了别的模型。此时绝不能把自己认成当前会话 ——
-    // 否则界面显示的是新模型，实际跑推理的却是这个旧 Worker（结果对不上）。
-    // 这里不必再 terminate：新一代加载在开头已经把它掐掉了。
+    await inference.initialise({
+      model,
+      modelBytes: bytes,
+      threads: currentThreads,
+      ortBase,
+      timeoutMs: SESSION_INIT_TIMEOUT_MS,
+    })
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     activeModelId = model.id
     logThreadCount()
@@ -758,14 +708,7 @@ function drawBitmap(canvas, bitmap) {
   canvas.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0)
 }
 
-/**
- * 识别水印：Gemini 走专用模板匹配，其余平台仍走规则引擎。
- *
- * 两条线必须同时跑 —— 一张图可能同时有 Gemini 和其他平台的水印，
- * 识别到 Gemini 不能跳过豆包/即梦等规则（反之亦然）。
- * Gemini 的返回分三种：not-found（不认识）、cleaned（反向 Alpha 直接还原成功）、
- * needs-inpaint（识别到了但质量不足，改用异形蒙版交 LaMa）。
- */
+/** 识别水印：Gemini 保留专用还原结果，其余平台返回 LaMa 待修复区域。 */
 async function detectRegions(canvas) {
   const width = canvas.width
   const height = canvas.height
@@ -781,11 +724,6 @@ async function detectRegions(canvas) {
   return { regions, gemini }
 }
 
-/**
- * 把 Gemini 反向 Alpha 还原出的像素块写回结果画布。
- * patch 是 Float→sRGB 还原后的 RGBA（Alpha 通道沿用原图），尺寸恰为 size×size，
- * 落点就是检测出的 (x, y)。写完即把 patch 置空释放，整块只占 size²×4 字节。
- */
 function applyGeminiPatch(context, gemini) {
   if (gemini.status !== 'cleaned' || !gemini.patch) return
   const patch = context.createImageData(gemini.size, gemini.size)
@@ -927,29 +865,14 @@ function outputFormat(item) {
   return { mime: 'image/png', quality: undefined, ext: '.png' }
 }
 
-/**
- * 未识别（保持原图）项的输出后缀 —— 必须沿用**原文件后缀**。
- * 旧实现统一按 outputFormat 走，把 WebP / HEIC 写成了 .png：
- * 文件名说 PNG、字节却是 HEIC，存进相册或解压后打不开。
- */
-function originalExt(item) {
-  const matched = String(item.name).match(/\.[^.]+$/)
-  if (matched) return matched[0].toLowerCase()
-  const type = String(item.file?.type || item.blob?.type || '')
-  if (type === 'image/jpeg') return '.jpg'
-  if (type === 'image/webp') return '.webp'
-  if (type === 'image/heic') return '.heic'
-  if (type === 'image/heif') return '.heif'
-  return '.png'
-}
-
-/**
- * 结果的实际 MIME：优先用 blob 自己的 type。
- * 「保持原图」项的结果就是原始文件，它的 type 是 image/webp / image/heic 之类 ——
- * 无条件套 outputFormat().mime 会让这些文件以错误的 MIME 交给系统分享。
- */
-function resultMime(item) {
-  return item.blob?.type || outputFormat(item).mime
+function originalFormat(item) {
+  const ext = (String(item.name).match(/\.[^.]+$/) || [''])[0].toLowerCase()
+  if (ext) return { mime: item.file.type || 'application/octet-stream', ext }
+  if (item.file.type === 'image/jpeg') return { mime: item.file.type, ext: '.jpg' }
+  if (item.file.type === 'image/webp') return { mime: item.file.type, ext: '.webp' }
+  if (item.file.type === 'image/heic') return { mime: item.file.type, ext: '.heic' }
+  if (item.file.type === 'image/heif') return { mime: item.file.type, ext: '.heif' }
+  return { mime: item.file.type || 'image/png', ext: '.png' }
 }
 
 function makeThumbnail(canvas) {
@@ -969,11 +892,30 @@ function revokeItem(item) {
   if (item.thumbUrl) { URL.revokeObjectURL(item.thumbUrl); item.thumbUrl = null }
 }
 
+function releasePersistedOutput(item) {
+  if (item.url) URL.revokeObjectURL(item.url)
+  item.url = null
+  item.blob = null
+}
+
+function hasResult(item) {
+  return (item.status === 'done' || item.status === 'unchanged') && !!(item.blob || item.persisted)
+}
+
+async function resultBlobFor(item) {
+  if (item.blob) return item.blob
+  if (item.persisted) {
+    const record = await loadResult(item.id)
+    if (record?.outputBlob) return record.outputBlob
+  }
+  throw new Error(`${item.name} 的结果已被浏览器清理，请重新处理`)
+}
+
 function itemStateText(item) {
   if (item.status === 'pending') return '等待处理'
   if (item.status === 'running') return item.progressText || '处理中'
-  if (item.status === 'done') return `已去除 · ${item.provider || ''} · ${item.regions || 1} 处 · ${item.elapsed || ''}`
-  if (item.status === 'unchanged') return '未识别水印 · 保持原图'
+  if (item.status === 'done') return `已去除 · ${item.provider || ''} · ${item.regions || 1} 处 · ${item.elapsed || ''}${item.persistError ? ' · 结果未落盘' : ''}`
+  if (item.status === 'unchanged') return `未识别水印 · 保持原图${item.persistError ? ' · 结果未落盘' : ''}`
   return `失败：${item.error || '未知原因'}`
 }
 
@@ -1009,26 +951,17 @@ function renderQueue() {
 
     const actions = document.createElement('div')
     actions.className = 'q-actions'
-    if (item.url) {
+    if (hasResult(item)) {
       // 单张「存图」：iOS 上走系统分享面板才能存进相册
       const save = document.createElement('button')
       save.type = 'button'
       save.className = 'secondary'
-      save.textContent = '存图'
+      save.textContent = canShareFiles() ? '存图' : '下载'
       save.addEventListener('click', (event) => {
         event.stopPropagation()
         void saveToAlbum([item])
       })
       actions.append(save)
-      if (!canShareFiles()) {
-        const link = document.createElement('a')
-        link.className = 'secondary link-button'
-        link.href = item.url
-        link.download = outputName(item)
-        link.textContent = '下载'
-        link.addEventListener('click', (event) => event.stopPropagation())
-        actions.append(link)
-      }
     }
 
     li.addEventListener('click', () => { void showItem(item.id) })
@@ -1072,8 +1005,9 @@ async function showItem(id) {
     elements.result.width = item.width
     elements.result.height = item.height
     const resultContext = elements.result.getContext('2d')
-    if (item.blob) {
-      const resultBitmap = await createImageBitmap(item.blob)
+    if (hasResult(item)) {
+      const resultBlob = await resultBlobFor(item)
+      const resultBitmap = await createImageBitmap(resultBlob)
       resultContext.drawImage(resultBitmap, 0, 0)
       resultBitmap.close?.()
     } else {
@@ -1117,7 +1051,6 @@ async function processItem(item) {
   item.progressText = '正在识别水印'
   renderQueue()
   const detected = await detectRegions(elements.source)
-  // 反向 Alpha 直接还原的结果不算"待修复区域"，但水印类型仍要计入 Gemini 这一处
   const geminiDirect = detected.gemini.status === 'cleaned'
   item.regions = detected.regions.length + (geminiDirect ? 1 : 0)
   const providers = detected.regions.map(region => region.provider)
@@ -1128,7 +1061,6 @@ async function processItem(item) {
   if (!item.regions) {
     item.status = 'unchanged'
   } else {
-    // 路径一：反向 Alpha 质量达标，直接还原，不需要 LaMa 推理
     if (geminiDirect) {
       item.progressText = '正在还原 Gemini 水印'
       renderQueue()
@@ -1136,8 +1068,6 @@ async function processItem(item) {
       applyGeminiPatch(targetContext, detected.gemini)
       detected.gemini.patch = null
     }
-    // 路径二：其余区域（含 Gemini 质量不足时生成的异形蒙版）走 LaMa 局部修复。
-    // 用独立 if 而非 else —— 同一张图上两种路径可能同时存在。
     if (detected.regions.length) {
       item.progressText = '正在准备模型'
       renderQueue()
@@ -1154,8 +1084,6 @@ async function processItem(item) {
         const maskInWindow = regionMaskInWindow(region, window_)
         const { image, mask } = buildInputs(targetContext.canvas, window_, maskInWindow)
         const started = performance.now()
-        // 推理交给独立 Worker：主线程不再被阻塞，超时能真正 terminate 掉推理。
-        // 返回的就是结果张量的裸数据（Float32Array），直接拿去合成。
         const output = await inference.run(image, mask, INFER_TIMEOUT_MS)
         inferMs += performance.now() - started
         compositeRegion(targetContext.canvas, output, window_, maskInWindow)
@@ -1164,36 +1092,34 @@ async function processItem(item) {
     item.status = 'done'
   }
 
-  // 「未识别 · 保持原图」的结果必须**就是原始文件本身**：
-  // 一旦过 canvas.toBlob('image/jpeg', 0.95)，JPEG 会被二次压缩、EXIF 等元数据全丢，
-  // PNG/WebP/HEIC 还会被转码 —— 那样导出的就不是「原图」了，只是看起来差不多。
-  // 真正修复过的 done 项仍走 canvas 导出（像素已被修改，重编码是原路径）。
-  // 缩略图不在此列：它只是列表里的小方块，仍可由 canvas 生成。
-  const unchanged = item.status === 'unchanged'
-  const format = outputFormat(item)
-  const blob = unchanged ? item.file : await canvasBlob(elements.result, format.mime, format.quality)
+  const format = item.status === 'unchanged' ? originalFormat(item) : outputFormat(item)
+  // “未识别、保持原图”必须保持原始字节；重新走 canvas 会让 JPEG 再次有损压缩，
+  // 也会丢掉元数据。缩略图仍从已解码画布生成，不影响下载内容。
+  const blob = item.status === 'unchanged'
+    ? item.file
+    : await canvasBlob(elements.result, format.mime, format.quality)
   revokeItem(item)
   item.blob = blob
   item.url = URL.createObjectURL(blob)
   const thumb = await makeThumbnail(elements.result)
   item.thumbUrl = URL.createObjectURL(thumb)
-  item.outputExt = unchanged ? originalExt(item) : format.ext
+  item.outputExt = format.ext
   item.modelId = model.id
   item.elapsed = `${((performance.now() - totalStarted) / 1000).toFixed(1)} 秒`
   item.inferSeconds = (inferMs / 1000).toFixed(1)
   item.metrics = displayMetrics(item)
-  // 结果落盘：刷新/重开后这一张直接还原成「已完成」，不必重跑。
-  // 「未识别 · 保持原图」同样落盘 —— 它的结论是"这张不用改"，重跑也只是再得出同样结论，
-  // 一并恢复才不会让用户以为那一张没处理过。
-  // 这里 await 是有意的：批量处理本来就在等，多花一次写盘换「刷新不白跑」很划算。
   try {
-    const stored = await saveResultRecord(item)
-    item.persisted = stored.saved
-    item.persistReason = stored.reason
+    await saveResult(item)
+    item.persisted = true
+    item.persistError = null
+    // IndexedDB 已经接管完整结果；内存里只留小缩略图和元数据。
+    // 预览、分享和 ZIP 在用户真正需要时再按 id 读取 Blob。
+    releasePersistedOutput(item)
   } catch (error) {
     item.persisted = false
-    item.persistReason = ''
-    console.warn('处理结果未能写入本机存储', error)
+    item.persistError = error instanceof StorageCapacityError
+      ? error.message
+      : `结果未能写入本机存储：${error.message}`
   }
   state.currentId = item.id
   renderQueue()
@@ -1243,25 +1169,22 @@ async function runBatch(items) {
   const started = performance.now()
   let index = 0
   let failed = 0
+  let storageWarning = ''
   try {
-    for (let loopIndex = 0; loopIndex < items.length; loopIndex++) {
-      const item = items[loopIndex]
+    for (const item of items) {
       if (state.stopRequested) break
       index++
       const fraction = (index - 1) / items.length
       setStatus(`第 ${index}/${items.length} 张 · ${item.name}`, fraction, '逐张处理中，请保持 Safari 在前台')
       const itemStarted = performance.now()
       try {
-        // OOM 重试交给 runWithOomFallback：判定「到底是不是 WASM 内存溢出」和
-        // 「4 → 2 → 1 怎么降」都由它负责，主流程只提供 run / 重建 / 提示三件事。
-        // 这样做的好处是那段判定能脱离浏览器单测 —— 在真机上构造 OOM 并不现实。
         await runWithOomFallback({
           run: async () => {
-            // 结局未定，先把旧结果清掉：pending 的条目不该挂着一份结果。
-            // 重试若成功会重新写盘，所以这里不会丢东西。
-            await deleteResultRecord(item.id)
+            await deleteResult(item.id).catch(() => {})
+            item.persisted = false
             await processItem(item)
             item.progressText = ''
+            if (item.persistError) storageWarning = item.persistError
             rememberTiming(selectedModel().id, (performance.now() - itemStarted) / 1000)
           },
           getThreads: () => currentThreads,
@@ -1269,11 +1192,6 @@ async function runBatch(items) {
             runtimeThreadCap = next
             currentThreads = next
           },
-          // iPhone 13 等小内存机型：ORT WASM 分配失败（多线程下峰值内存超 iOS 单页配额）。
-          // Worker 是会话的生命周期边界：terminate 掉它，WASM 内存与线程池一并归还，
-          // 再以 2/1 线程重建，当场重试 —— 无需刷新页面。
-          // 降级只记在本次页面的内存里：刷新或重开就按设备能力重新评估，
-          // 免得一次偶发 OOM（当时后台开着别的标签页）把设备永久钉在低线程。
           rebuild: () => releaseActiveSession(),
           onRetry: async next => {
             item.status = 'pending'
@@ -1287,14 +1205,13 @@ async function runBatch(items) {
         console.error(error)
         item.status = 'failed'
         item.error = isOutOfMemory(error)
-          ? '设备内存不足；建议切到 INT8 模型、关闭其他 Safari 标签页后重试'
+          ? '设备内存不足；建议使用 INT8、关闭其他 Safari 标签页后重试'
           : friendlyError(item, error)
         failed++
-        await deleteResultRecord(item.id)
-        if (/120 秒|内存不足|推理超时|推理线程/.test(item.error)) await releaseActiveSession()
+        if (/120 秒|初始化超过|内存不足|推理超时|推理线程/.test(item.error)) await releaseActiveSession()
       }
       renderQueue()
-      setMetrics(item.metrics || displayMetrics(item))
+      setMetrics(displayMetrics(item))
       setStatus(
         `第 ${index}/${items.length} 张 · ${item.status === 'failed' ? '失败' : item.status === 'unchanged' ? '未识别' : '已完成'}`,
         index / items.length,
@@ -1310,15 +1227,11 @@ async function runBatch(items) {
     void releaseWakeLock()
     const done = state.items.filter(entry => entry.status === 'done').length
     const unchanged = state.items.filter(entry => entry.status === 'unchanged').length
-    // 结果没写进本机存储的那些：用户会默认「关掉页面再打开结果还在」，
-    // 所以这件事必须说出来，不能只写在控制台（同 addFiles 里那条提示的理由）。
-    const unsaved = state.items.filter(entry => entry.blob && entry.persisted === false).length
     const totalSeconds = ((performance.now() - started) / 1000).toFixed(1)
     setStatus(
       state.stopRequested ? '已停止' : '批量处理完成',
       1,
-      `完成 ${done} · 未识别 ${unchanged}${failed ? ` · 失败 ${failed}` : ''} · 用时 ${totalSeconds} 秒`
-        + (unsaved ? ` · ${unsaved} 张结果未能保存，刷新后需重跑` : ''),
+      `完成 ${done} · 未识别 ${unchanged}${failed ? ` · 失败 ${failed}` : ''} · 用时 ${totalSeconds} 秒${storageWarning ? ` · ${storageWarning}` : ''}`,
     )
     updateBatchHint(0)
     renderQueue()
@@ -1327,7 +1240,7 @@ async function runBatch(items) {
 
 /** 已处理 + 未识别（保持原图）都算「有结果」，保证一张都不少 */
 function albumTargets() {
-  return state.items.filter(item => (item.status === 'done' || item.status === 'unchanged') && item.blob && item.url)
+  return state.items.filter(hasResult)
 }
 
 /** 探测一次：浏览器能否分享文件（iOS Safari 可以，桌面 Chrome 视平台而定） */
@@ -1343,22 +1256,28 @@ function canShareFiles() {
 
 /** 存入相册：iOS 只有系统分享面板能把图片写进「照片」，分享面板里选「存储图像」 */
 async function saveToAlbum(items) {
-  const targets = items.filter(item => item.blob)
+  const targets = items.filter(hasResult)
   if (!targets.length) return
-  // MIME 取结果 blob 自己的 type：「保持原图」的项就是原始 WebP/HEIC，
-  // 套 outputFormat 的 image/png 会让系统分享面板按错误类型处理。
-  const files = targets.map(item => new File([item.blob], outputName(item), { type: resultMime(item) }))
-  if (!canShareFiles()) {
-    const link = document.createElement('a')
-    link.href = targets[0].url
-    link.download = outputName(targets[0])
-    link.click()
-    setStatus('当前浏览器不支持直接分享文件', 1, '已改为下载第一张，其余可在列表里逐张保存')
-    return
-  }
-  setStatus(`正在打开分享面板（${files.length} 张）`, null, '在面板里选「存储图像」即可存进相册')
   try {
-    await navigator.share({ files, title: 'LaMa 去水印结果' })
+    if (!canShareFiles()) {
+      const blob = await resultBlobFor(targets[0])
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = outputName(targets[0])
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setStatus('已开始下载', 1, targets.length > 1 ? '其余图片可在列表里逐张下载' : outputName(targets[0]))
+      return
+    }
+    const blobs = await Promise.all(targets.map(resultBlobFor))
+    const files = targets.map((item, index) => new File(
+      [blobs[index]],
+      outputName(item),
+      { type: blobs[index].type || (item.status === 'unchanged' ? originalFormat(item).mime : outputFormat(item).mime) },
+    ))
+    setStatus(`正在打开分享面板（${files.length} 张）`, null, '在面板里选「存储图像」即可存进相册')
+    await navigator.share({ files, title: 'Xiaolin 去水印结果' })
     setStatus('已交给系统保存', 1, `${files.length} 张`)
   } catch (error) {
     if (error.name !== 'AbortError') setStatus(`保存失败：${error.message}`, 1)
@@ -1371,320 +1290,93 @@ async function saveAll() {
   if (!finished.length) return
   setStatus('正在打包 ZIP', null, '图片较多时需要一点时间')
   await new Promise(resolve => setTimeout(resolve, 0))
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')
-  const zip = await buildZip(zipEntries(finished))
-  const url = URL.createObjectURL(zip)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `去水印-${stamp}.zip`
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 60000)
-  setStatus('ZIP 已生成', 1, `${finished.length} 张 · ${(zip.size / 1048576).toFixed(1)} MB`)
+  try {
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')
+    const zip = await buildZip(await zipEntries(finished))
+    const url = URL.createObjectURL(zip)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `去水印-${stamp}.zip`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+    setStatus('ZIP 已生成', 1, `${finished.length} 张 · ${(zip.size / 1048576).toFixed(1)} MB`)
+  } catch (error) {
+    setStatus(`ZIP 生成失败：${error.message}`, 1, '结果可能已被浏览器清理，请重新处理缺失图片')
+  }
 }
 
-function zipEntries(finished) {
-  return finished.map((item, index) => {
+async function zipEntries(finished) {
+  return Promise.all(finished.map(async (item, index) => {
     const stem = item.name.replace(/\.[^.]+$/, '')
     const ext = item.outputExt || outputFormat(item).ext
     const prefix = item.status === 'done' ? '去水印' : '原图'
     return {
       name: `${prefix}-${String(index + 1).padStart(3, '0')}-${stem}${ext}`,
-      blob: item.blob,
+      blob: await resultBlobFor(item),
     }
-  })
+  }))
 }
 
-/* ---------------- 文件选择与缓存 ---------------- */
+/* ---------------- 文件选择与恢复 ---------------- */
 
-/**
- * 稳定的条目 id。
- * ⚠️ 不能用原来那套会话内自增序号（state.nextId++）：刷新后条目会重新编号，
- * 结果记录就对不上了。改用随机 UUID，并随批记录一起落盘，恢复时原样传回。
- */
 function newItemId() {
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-/** 从结果 blob 重建队列缩略图。objectURL 无法持久化，只能恢复时重算 */
 async function makeThumbnailFromBlob(blob) {
   const bitmap = await createImageBitmap(blob)
   try {
-    const width = 132
-    const height = Math.max(1, Math.round(bitmap.height * (width / bitmap.width)))
-    const thumb = document.createElement('canvas')
-    thumb.width = width
-    thumb.height = height
-    thumb.getContext('2d').drawImage(bitmap, 0, 0, width, height)
-    return await canvasBlob(thumb, 'image/jpeg')
+    const canvas = document.createElement('canvas')
+    canvas.width = 132
+    canvas.height = Math.max(1, Math.round(bitmap.height * (132 / bitmap.width)))
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+    return await canvasBlob(canvas, 'image/jpeg', 0.8)
   } finally {
     bitmap.close?.()
   }
 }
 
-function openImageDatabase() {
-  return new Promise((resolve, reject) => {
-    if (!('indexedDB' in window)) return reject(new Error('浏览器不支持 IndexedDB'))
-    const request = indexedDB.open(IMAGE_DB_NAME, IMAGE_DB_VERSION)
-    request.onupgradeneeded = () => {
-      const database = request.result
-      if (!database.objectStoreNames.contains(IMAGE_STORE)) database.createObjectStore(IMAGE_STORE, { keyPath: 'id' })
-      if (!database.objectStoreNames.contains(RESULT_STORE)) database.createObjectStore(RESULT_STORE, { keyPath: 'id' })
-    }
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error || new Error('无法打开图片缓存'))
-  })
-}
-
-async function saveSelectedFiles(files, ids) {
-  // 防御性复查（正常路径已在 addFiles 里原子拒绝过）。
-  // ⚠️ 超限时只返回 false，**绝不调用 deleteStoredFiles、也不清空任何 store** ——
-  // 那会顺手毁掉用户上一批已经处理好的结果，而本次追加本来就没被接受。
-  if (batchLimitReason(files.map(file => ({ file })))) return false
-  const database = await openImageDatabase()
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(IMAGE_STORE, 'readwrite')
-      transaction.objectStore(IMAGE_STORE).put({
-        id: 'batch',
-        savedAt: Date.now(),
-        // ids 与 files 一一对应，且是稳定 UUID。结果记录靠它关联，所以必须一起存 ——
-        // 只存文件的话，刷新后无从反查「这张图的结果是哪条」。
-        ids,
-        files: files.map(file => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file })),
-      })
-      transaction.oncomplete = resolve
-      transaction.onerror = () => reject(transaction.error || new Error('图片缓存失败'))
-      transaction.onabort = () => reject(transaction.error || new Error('图片缓存中止'))
-    })
-    return true
-  } finally { database.close() }
-}
-
-async function readSelectedFiles() {
-  const database = await openImageDatabase()
-  try {
-    const record = await new Promise((resolve, reject) => {
-      const transaction = database.transaction(IMAGE_STORE, 'readonly')
-      const request = transaction.objectStore(IMAGE_STORE).get('batch')
-      request.onsuccess = () => resolve(request.result || null)
-      request.onerror = () => reject(request.error || new Error('图片恢复失败'))
-    })
-    if (!record?.files?.length) return { files: [], ids: [] }
-    // 逐条重建，并且 file 与 id 在同一次循环里成对产出 ——
-    // 这样「跳过一条坏记录」时它的 id 也一起被跳过，永远不会出现错位。
-    const rawFiles = record.files
-    const rawIds = Array.isArray(record.ids) && record.ids.length === rawFiles.length ? record.ids : []
-    const files = []
-    const ids = []
-    for (let index = 0; index < rawFiles.length; index++) {
-      const entry = rawFiles[index]
-      if (!entry?.blob) continue // 记录里没有字节：跳过这一条（连带它的 id），不让它污染对齐
-      files.push(new File([entry.blob], entry.name || `image-${index + 1}`, {
-        type: entry.type || entry.blob.type,
-        lastModified: entry.lastModified || Date.now(),
-      }))
-      // v1 的老记录没有 ids（那时还没做结果恢复）。留空让调用方回退到新生成的 id：
-      // 这类条目只是丢掉「结果恢复」，原图照常恢复、重跑即可，不该整体拒绝恢复。
-      ids.push(rawIds[index] || null)
-    }
-    return { files, ids }
-  } finally { database.close() }
-}
-
-/**
- * 删除持久化的任务与结果（清空列表、恢复失败时调用），否则下次打开会再次恢复。
- * 两个 store 一起清：只清原图而留下结果，下次恢复的条目树与结果树就对不上了。
- */
-async function deleteStoredFiles() {
-  try {
-    const database = await openImageDatabase()
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction([IMAGE_STORE, RESULT_STORE], 'readwrite')
-      transaction.objectStore(IMAGE_STORE).delete('batch')
-      transaction.objectStore(RESULT_STORE).clear()
-      transaction.oncomplete = resolve
-      transaction.onerror = () => reject(transaction.error || new Error('清除图片缓存失败'))
-      transaction.onabort = () => reject(transaction.error || new Error('清除图片缓存中止'))
-    })
-    database.close()
-  } catch (error) { console.warn('清除图片缓存失败', error) }
-}
-
-/* ---------------- 处理结果的持久化 ---------------- */
-
-/**
- * 结果写盘的空间检查。
- * 不用"结果总量不超过 N MB"这种静态阈值：配额是整个源共享的（模型缓存那 62MB 也算在里面），
- * 静态阈值既可能过早放弃、也可能在配额已被别的东西吃掉时依然放行。
- * 直接问浏览器还剩多少，留 10% 余量给浏览器自己的操作空间。
- */
-async function hasRoomForResult(bytes) {
-  if (!navigator.storage?.estimate) return true
-  try {
-    const { usage = 0, quota = 0 } = await navigator.storage.estimate()
-    if (!quota) return true
-    if (usage + bytes < quota * 0.9) return true
-    console.warn(`本机存储余量不足（已用 ${(usage / 1048576).toFixed(0)}MB / 配额 ${(quota / 1048576).toFixed(0)}MB），本次不保留处理结果`)
-    return false
-  } catch { return true } // 问不到就当作有空间，不要因为探测失败而放弃恢复能力
-}
-
-/**
- * 把一张的处理结果写盘，刷新后可原样还原。
- * 只返回成败、不抛异常 —— 恢复能力是锦上添花，不能因为它让本已成功的处理变成红色失败。
- */
-async function saveResultRecord(item) {
-  if (!item.blob) return { saved: false, reason: '' }
-  if (!await hasRoomForResult(item.blob.size)) {
-    return { saved: false, reason: '本机存储空间不足，本次不保留处理结果' }
-  }
-  const database = await openImageDatabase()
-  try {
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(RESULT_STORE, 'readwrite')
-      transaction.objectStore(RESULT_STORE).put({
-        id: item.id,
-        savedAt: Date.now(),
-        status: item.status,
-        modelId: item.modelId,
-        outputBlob: item.blob,
-        outputExt: item.outputExt,
-        provider: item.provider,
-        regions: item.regions,
-        elapsed: item.elapsed,
-        inferSeconds: item.inferSeconds,
-        metrics: item.metrics,
-        width: item.width,
-        height: item.height,
-      })
-      transaction.oncomplete = resolve
-      transaction.onerror = () => reject(transaction.error || new Error('结果缓存失败'))
-      transaction.onabort = () => reject(transaction.error || new Error('结果缓存中止'))
-    })
-    return { saved: true, reason: '' }
-  } finally { database.close() }
-}
-
-/** 批量读回结果。没有记录的 id 自然缺席，由调用方跳过 */
-async function readResultRecords(ids) {
-  const wanted = ids.filter(Boolean)
-  if (!wanted.length) return new Map()
-  const database = await openImageDatabase()
-  try {
-    const transaction = database.transaction(RESULT_STORE, 'readonly')
-    const store = transaction.objectStore(RESULT_STORE)
-    // 逐条独立捕获。旧实现用 Promise.all + reject：任何一条结果读失败（记录损坏、
-    // 事务被打断）都会让整批恢复连带失败 —— 一张坏记录废掉另外 19 张的好结果。
-    // 现在失败的条目只是缺席，其余照常还原。
-    const records = await Promise.all(wanted.map(id => new Promise(resolve => {
-      const request = store.get(id)
-      request.onsuccess = () => resolve(request.result || null)
-      request.onerror = () => {
-        console.warn('一条处理结果读取失败，已跳过（不影响其它条目）', id, request.error)
-        resolve(null)
-      }
-    })))
-    return new Map(records.filter(record => record?.outputBlob).map(record => [record.id, record]))
-  } finally { database.close() }
-}
-
-/**
- * 删掉一张的结果。
- * 重跑有可能变成「失败」或「未识别」—— 此时若不删旧记录，下次刷新会把它还原成重跑前的
- * 成功状态，界面与实际不符（而且用户会以为那张处理过了）。
- */
-async function deleteResultRecord(id) {
-  try {
-    const database = await openImageDatabase()
-    await new Promise((resolve, reject) => {
-      const transaction = database.transaction(RESULT_STORE, 'readwrite')
-      transaction.objectStore(RESULT_STORE).delete(id)
-      transaction.oncomplete = resolve
-      transaction.onerror = () => reject(transaction.error || new Error('结果清除失败'))
-      transaction.onabort = () => reject(transaction.error || new Error('结果清除中止'))
-    })
-    database.close()
-  } catch (error) { console.warn('清除结果缓存失败', error) }
-}
-
-async function addFiles(files, { restored = false, ids = [] } = {}) {
-  // ① 先配对、再过滤。
-  // ids[index] 是按 files 的**原始下标**对齐的（落盘时一一对应）。旧实现先 filter 掉
-  // 零字节文件、再按过滤后的下标取 ids[index]：只要列表里夹着一张空文件，
-  // 后面所有条目就整体错位一格 —— 处理结果会挂到别人的图上，而且看不出来。
-  // 所以 file 与 id 必须先绑成 { file, id } 这个整体，此后只以整体为单位过滤/标记。
-  const pairs = (files || [])
-    .map((file, index) => ({ file, id: ids[index] || null }))
-    .filter(pair => pair.file)
-  if (!pairs.length) return
-
-  // ② 组装候选条目。零字节文件分两种命运：
-  //    新选择 → 直接丢弃（用户重选即可，与旧行为一致）；
-  //    恢复   → 保留成一条 failed。既然它确实在落盘批次里，就让用户看到是哪一张坏了，
-  //             而不是让它凭空消失、让列表张数与上次对不上（某一张损坏只影响这一张）。
-  const candidates = []
-  const emptyItems = []
-  for (const pair of pairs) {
-    const item = {
-      id: pair.id || newItemId(),
-      file: pair.file,
-      name: pair.file.name,
-      restored,
-      status: 'pending',
-      thumbUrl: null,
-      url: null,
-      blob: null,
-    }
-    if (pair.file.size > 0) candidates.push(item)
-    else if (restored) {
-      item.status = 'failed'
-      item.error = '这张图片是空文件，请重新选择'
-      emptyItems.push(item)
-    }
-  }
-
-  // ③ 超限 = 整次追加原子拒绝，判定必须在**任何副作用之前**完成。
-  //    旧实现先把图片塞进 state.items 才开始检查能否持久化，于是出现状态不一致：
-  //    队列里有新图片 → IndexedDB 里仍是旧批次 → 刷新后新图片凭空消失。
-  //    现在候选批次 = 已有条目 + 本次接受的文件，超 40 张或超 200MB 就整批拒绝：
-  //    不碰 state.items、不碰两个 store、不启动模型预热，也不允许部分追加。
-  //    （张数/体积判定收敛在 batch-limits.js，主流程与单测共用同一份真相。）
+async function addFiles(files, { restored = false, ids = [], warmup = true } = {}) {
+  const accepted = files.filter(file => file && file.size > 0)
+  if (!accepted.length) return
   if (!restored) {
-    const reason = batchLimitReason([...state.items, ...candidates])
-    if (reason) {
-      // 清空输入框的值：否则用户重新选中「同样这些文件」时不会触发 change，界面像卡死。
+    const candidateItems = [
+      ...state.items,
+      ...accepted.map(file => ({ file })),
+    ]
+    const limitReason = batchLimitReason(candidateItems)
+    if (limitReason) {
       elements.file.value = ''
-      setStatus(batchLimitMessage(reason, state.items.length), 0, '本次选择已整批忽略，未加入列表')
+      elements.selectedName.hidden = false
+      elements.selectedName.textContent = `无法追加：${limitReason}；现有 ${state.items.length} 张及结果已保留`
+      setStatus('所选图片未加入列表', 0, '请减少本次选择数量或先下载并清空当前列表')
       return
     }
   }
-
-  state.items.push(...candidates, ...emptyItems)
-  const added = candidates.length + emptyItems.length
-  const latest = candidates[candidates.length - 1] || null
+  for (let index = 0; index < accepted.length; index++) {
+    const file = accepted[index]
+    const item = { id: ids[index] || newItemId(), file, name: file.name, restored, status: 'pending', thumbUrl: null, url: null, blob: null }
+    state.items.push(item)
+  }
+  const latest = state.items[state.items.length - 1]
   elements.selectedName.hidden = false
-  elements.selectedName.textContent = restored
-    ? `已恢复上次的 ${added} 张图片，列表共 ${state.items.length} 张`
-    : `已选择 ${candidates.length} 张，列表共 ${state.items.length} 张`
+  elements.selectedName.textContent = `已选择 ${accepted.length} 张，列表共 ${state.items.length} 张`
   // 同步标记：用户主动选图 = 下次打开可以恢复（localStorage 是同步落盘，关浏览器也不丢）
-  try { localStorage.setItem('lama-restore', '1') } catch { /* 忽略 */ }
-  // 选完图立刻在后台准备模型（下载 / 读缓存 / 校验 / 建会话）。
-  // ⚠️ 保持尽早启动、不要为了别的目的往后挪：它可能要下 62MB，
-  // 挪到 saveSelectedFiles（写 IndexedDB）与 showItem（解码位图）之后，
-  // 等于把这些耗时都加在下载前面 —— 实测会把预热推迟好几秒，是反向优化。
-  // ⚠️ 但**恢复路径不在这里预热**：整批都已完成时用户只是回来看结果，
-  // 为此下载 62MB 或建一次 WASM 会话纯属浪费。确有待处理任务时，
-  // 由 restoreSelectedFiles 在读完结果记录之后补一次预热。
-  if (!restored) void warmUpModel()
-  try {
-    const persisted = await saveSelectedFiles(state.items.map(item => item.file), state.items.map(item => item.id))
-    if (!persisted) {
-      // 别只写 console —— 用户会默认「关掉页面再打开一定能恢复」（评价第 7 条）。
-      // 写在选图信息那一行：不占用状态文字，也不会被模型下载进度覆盖。
-      elements.selectedName.textContent += ' · 图片较多，本次不启用自动恢复'
+  try { localStorage.setItem(RESTORE_PREF_KEY, '1') } catch { /* 忽略 */ }
+  // 先把原图任务写入 IndexedDB，再预热模型。iOS 可能在切到后台时立即回收页面，
+  // 所以任务落盘优先于省下几秒模型等待。
+  if (!restored) {
+    try {
+      const persisted = await saveBatch(state.items)
+      if (!persisted.saved) elements.selectedName.textContent += ` · ${persisted.reason}`
+    } catch (error) {
+      const reason = error instanceof StorageCapacityError ? error.message : `无法保存任务：${error.message}`
+      elements.selectedName.textContent += ` · ${reason}`
+      console.warn('无法缓存所选图片', error)
     }
-  } catch (error) { console.warn('无法缓存所选图片', error) }
-  if (latest) await showItem(latest.id)
+  }
+  if (warmup) void warmUpModel()
+  await showItem(latest.id)
   renderQueue()
   updateBatchHint()
   updatePreviewVisibility()
@@ -1751,9 +1443,8 @@ elements.saveAll.addEventListener('click', () => { void saveAll() })
 
 elements.clear.addEventListener('click', async () => {
   if (state.running) return
-  // 同步写清空标记：即使下面的 IndexedDB 删除还没落盘、用户立刻关浏览器，下次打开也据此跳过恢复
-  try { localStorage.setItem('lama-restore', '0') } catch { /* 忽略 */ }
-  await deleteStoredFiles()
+  try { localStorage.setItem(RESTORE_PREF_KEY, '0') } catch { /* 忽略 */ }
+  await clearStoredJob().catch(error => console.warn('清除任务缓存失败', error))
   state.items.forEach(revokeItem)
   state.items = []
   state.currentId = null
@@ -1770,94 +1461,63 @@ elements.clear.addEventListener('click', async () => {
 
 async function restoreSelectedFiles() {
   try {
-    // 用户清空过（同步标记）就不恢复，即使 IndexedDB 删除因竞态没完成
-    if (localStorage.getItem('lama-restore') === '0') return
-    const { files, ids } = await readSelectedFiles()
-    if (!files.length) return
-    // ⚠️ 这里不再「只探测第一张，解码失败就判整批损坏」。
-    // 第一张可能只是它自己坏了（传输截断、被清理成空壳），而同一批里其它图片
-    // **已经处理好的结果**是无辜的 —— 旧逻辑会连带把整批原图和全部结果删掉，
-    // 把「一张坏图」升级成「用户一晚上的批量白跑」。
-    // 现在批次读取成功就先把全部条目恢复出来，个别条目的问题只影响它自己：
-    // 空文件在 addFiles 里标 failed；解码不了的会在处理它时单独失败。
-    await addFiles(files, { restored: true, ids })
-    // 还原已完成的结果：把落盘的输出直接画回来，这些图不必重跑。
-    // 整批读取再兜一层：读不到结果只意味着「这几张要重跑」，不该影响队列恢复。
-    let records = new Map()
-    try {
-      records = await readResultRecords(state.items.map(item => item.id))
-    } catch (error) {
-      console.warn('处理结果读取失败，本次只恢复原图（结果记录未被删除）', error)
-    }
+    if (localStorage.getItem(RESTORE_PREF_KEY) === '0') return
+    const entries = await loadBatch()
+    if (!entries.length) return
+    await addFiles(entries.map(entry => entry.file), { restored: true, ids: entries.map(entry => entry.id), warmup: false })
     let completed = 0
     for (const item of state.items) {
-      const record = records.get(item.id)
-      if (!record) continue
-      item.status = record.status === 'done' ? 'done' : 'unchanged'
-      item.modelId = record.modelId
-      item.blob = record.outputBlob
-      item.url = URL.createObjectURL(record.outputBlob)
-      item.outputExt = record.outputExt
-      item.provider = record.provider
-      item.regions = record.regions
-      item.elapsed = record.elapsed
-      item.inferSeconds = record.inferSeconds
-      item.metrics = record.metrics
-      item.width = record.width
-      item.height = record.height
+      if (!item.file.size) {
+        item.status = 'failed'
+        item.error = '缓存原图为空，请重新选择这张图片'
+        continue
+      }
+      // 逐张读取，避免恢复 20 张时把所有完整结果 Blob 同时挂在一个 Map 中。
+      let result = null
+      try {
+        result = await loadResult(item.id)
+      } catch (error) {
+        item.persistError = `结果读取失败：${error.message}`
+        console.warn(`无法恢复 ${item.name} 的结果`, error)
+        continue
+      }
+      if (!result?.outputBlob) continue
+      item.status = result.status === 'done' ? 'done' : 'unchanged'
+      item.modelId = result.modelId
+      item.blob = null
+      item.url = null
+      item.outputExt = result.outputExt
+      item.provider = result.provider
+      item.regions = result.regions
+      item.elapsed = result.elapsed
+      item.inferSeconds = result.inferSeconds
+      item.metrics = result.metrics
+      item.width = result.width
+      item.height = result.height
       item.persisted = true
       try {
-        // 缩略图是 objectURL，无法持久化，只能从结果 blob 重算。
-        // 它失败不该连累结果本身 —— 缩略图只是列表里的小方块。
-        const thumb = await makeThumbnailFromBlob(record.outputBlob)
+        const thumb = await makeThumbnailFromBlob(result.outputBlob)
         item.thumbUrl = URL.createObjectURL(thumb)
-      } catch { /* 忽略 */ }
+      } catch { /* 缩略图失败不影响结果恢复 */ }
       completed++
     }
+    renderQueue()
     updateBatchHint()
-    // 显示最近一张有结果的：否则预览区停在第一张的原图上，看起来像什么都没恢复。
-    const lastDone = [...state.items].reverse().find(item => item.blob)
+    const lastDone = [...state.items].reverse().find(hasResult)
     if (lastDone) await showItem(lastDone.id)
-    // 只有在确实还有待处理的图时，才在后台准备模型。
-    // 整批都已完成（用户只是回来看结果 / 下载）时不预热 —— 那时既不必建 WASM 会话，
-    // 更不该为一个"已完成"的批次去重新下载 62MB。
-    if (state.items.some(item => item.status === 'pending')) void warmUpModel()
-    // 「其中 X 张已有结果」写进选图信息那一行，而不是状态文字：
-    // 状态文字紧接着就会被模型预热的「正在初始化…」覆盖掉，用户基本看不到。
-    // 这和上面「不启用自动恢复」的提示是同一个理由 —— 见 addFiles 里的注释。
-    if (completed) elements.selectedName.textContent += ` · 其中 ${completed} 张已有结果`
-    setStatus(
-      `已恢复上次的 ${files.length} 张图片`,
-      completed / files.length,
-      completed
-        ? `其中 ${completed} 张已有结果，可直接查看或下载；剩余的可继续处理`
-        : '点「开始批量处理」继续',
-    )
+    if (state.items.some(item => needsProcessing(item))) void warmUpModel()
+    setStatus(`已恢复 ${entries.length} 张图片`, completed / entries.length, `其中 ${completed} 张已有结果，可继续剩余图片`)
   } catch (error) {
-    // 外层失败只**报告**，不动数据：
-    // 数据库里那批任务与结果都还在，重开页面通常就能恢复（多为读取被占用/被打断）。
-    // 这里绝不能写 lama-restore=0、更不能 deleteStoredFiles —— 那等于因为一次读取失败
-    // 就永久销毁用户的任务；真要放弃，由用户主动点「清空列表」。
-    console.warn('恢复上次任务失败', error)
-    setStatus('暂时无法读取上次任务，请重新打开页面；如仍失败，可手动清空列表后重新选择', 0)
+    console.warn('无法恢复上次图片', error)
+    setStatus('暂时无法读取上次任务', 0, '请重新打开页面；如仍失败，可手动清空列表后重新选择')
   }
 }
 
 setMetrics({})
 logThreadCount()
 updatePreviewVisibility()
-// iOS 27 的 Liquid Glass 顶部栏会浮在网页内容之上做半透明淡化 ——
-// 实测 iPhone 17 Pro（iOS 27）首屏第一行「本机浏览器推理 · 图片不会上传」被压得看不清。
-// 这里按**系统版本**给整页加一段上边距让开它，旧系统完全不受影响。
-//
-// 为什么不能按机型判断：iPhone 17 与 17 Pro 的视口尺寸与像素比完全一致（402×874、3x），
-// CSS 与 JS 都区分不了这两台机器。真正引发问题的是 iOS 27，不是机型 ——
-// 按版本走既等价、又不会漏掉以后升级的其它设备。
 const iosMajor = Number((navigator.userAgent.match(/\bOS (\d+)[_.]/) || [])[1] || 0)
 if (iosMajor >= 27) document.documentElement.classList.add('ios-liquid-glass')
-// 版本号：语义版本取自 package.json，日期为构建日期（本地时区）—— 两者都由 vite define 注入，
-// 页面不再硬编码，避免「改了代码却忘了改页面上的版本号」。
-// 判空后再写：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失。
 if (elements.appVersion) elements.appVersion.textContent = `v${__APP_SEMVER__} · ${__BUILD_DATE__}`
 // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
 // 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——

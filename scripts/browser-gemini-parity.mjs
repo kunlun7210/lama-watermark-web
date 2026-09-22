@@ -1,14 +1,3 @@
-/**
- * Gemini 浏览器侧 parity：逐张比对识别状态、处理方法、坐标、模板尺寸、Alpha 增益与动作哈希。
- *
- * ⚠️ 基线里 `clean_*` 样本必须为 `status: "not-found"` + `actionSha256: null`。
- * 自 v0.15.0 起，反向 Alpha 残差超过 `GEMINI_FALLBACK_MAX_RESIDUAL`(0.35) 就直接判 not-found、
- * **不生成掩膜** —— 干净图偶然命中轮廓（如 `clean_gemini_sample_2.png` 残差高达 0.965）
- * 因此不会被送进 LaMa 擦掉。没有掩膜自然没有动作哈希，这是正确行为，不是缺字段。
- *
- * 反过来：若某个 `clean_*` 条目出现 `needs-inpaint`，说明**基线陈旧或残差门槛被改坏了**，
- * 别为了让脚本变绿去重录基线 —— 先查 `src/gemini.js` 的 `geminiFallbackIsValid`。
- */
 import { execFileSync } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
@@ -33,9 +22,16 @@ async function filesBelow(directory) {
 }
 
 const expected = JSON.parse(await readFile(expectedPath, 'utf8'))
-const positiveFiles = (await filesBelow(geminiRoot)).filter(file => expected[path.basename(file)])
+const fixtureFiles = (await filesBelow(geminiRoot)).filter(file => expected[path.basename(file)])
+const invalidCleanFixtures = Object.entries(expected)
+  .filter(([name]) => /^clean_/i.test(name))
+  .filter(([, value]) => value.status !== 'not-found')
+if (invalidCleanFixtures.length) {
+  throw new Error(`干净样本不能被基线标记为水印：${invalidCleanFixtures.map(([name]) => name).join(', ')}`)
+}
 const negativeFiles = negativeRoot
   ? (await filesBelow(negativeRoot)).filter(file => {
+      if (expected[path.basename(file)]) return false
       const description = execFileSync('file', ['-b', file], { encoding: 'utf8' })
       return !/HEIF|HEIC/i.test(description)
     })
@@ -133,13 +129,14 @@ async function inspect(file) {
 }
 
 const mismatches = []
-for (const file of positiveFiles) {
+for (const file of fixtureFiles) {
   const name = path.basename(file)
   const actual = await inspect(file)
   const wanted = expected[name]
   const exact = ['status', 'method', 'x', 'y', 'size', 'actionSha256']
   const wrong = exact.some(key => actual[key] !== wanted[key])
     || (wanted.alphaGain !== null && Math.abs(actual.alphaGain - wanted.alphaGain) > 0.021)
+    || (/^clean_/i.test(name) && actual.status !== 'not-found')
   if (wrong) mismatches.push({ name, wanted, actual })
 }
 
@@ -156,7 +153,7 @@ for (const file of negativeFiles) {
 }
 
 console.log(JSON.stringify({
-  positives: positiveFiles.length,
+  fixtures: fixtureFiles.length,
   mismatches,
   negatives: negativeDecoded,
   falsePositives,

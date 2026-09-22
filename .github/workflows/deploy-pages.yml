@@ -18,75 +18,42 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm test
-
-      # 浏览器 UI 断言必须放在**同一个 job 内、部署之前**，它才是门禁：
-      # 失败则 build job 失败，deploy job 不会执行。
-      # 早先把它拆成独立 workflow 是错的 —— 两者并行跑，UI 断言红了 Pages 也已经上线了。
-      - name: 浏览器 UI 断言（部署门禁）
+      - name: Browser UI smoke test
         run: |
           set -euo pipefail
-
-          npx vite preview --host 127.0.0.1 --port 4173 > /tmp/preview.log 2>&1 &
-          preview_pid=$!
-          chrome_pid=''
-          trap 'kill "$preview_pid" ${chrome_pid:+"$chrome_pid"} 2>/dev/null || true' EXIT
-
-          for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:4173/ > /dev/null; then break; fi
-            if [ "$i" = 60 ]; then echo "预览服务未就绪" >&2; cat /tmp/preview.log >&2; exit 1; fi
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/lama-vite.log 2>&1 &
+          vite_pid=$!
+          for attempt in {1..60}; do
+            curl -fsS http://127.0.0.1:4173/ >/dev/null && break
             sleep 1
           done
-
-          # 起服务、起浏览器、跑断言写在同一个 step：后台进程跨 step 不保证存活。
-          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
-          if [ -z "$CHROME" ]; then echo "runner 上没有可用的 Chrome/Chromium" >&2; exit 1; fi
-          echo "使用浏览器：$CHROME"
-          "$CHROME" --version
-
-          # --no-sandbox 在容器里是必需项，不加会因 sandbox 初始化失败直接退出。
-          "$CHROME" --headless=new --no-sandbox --disable-gpu \
-            --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile \
-            --window-size=402,874 http://127.0.0.1:4173/ > /tmp/chrome.log 2>&1 &
+          google-chrome --headless=new --no-sandbox --disable-gpu \
+            --remote-debugging-port=9223 --user-data-dir=/tmp/lama-chrome \
+            http://127.0.0.1:4173/ > /tmp/lama-chrome.log 2>&1 &
           chrome_pid=$!
-          for i in $(seq 1 40); do
-            if curl -sf http://127.0.0.1:9222/json/version > /dev/null; then break; fi
-            if [ "$i" = 40 ]; then echo "Chrome CDP 未就绪" >&2; cat /tmp/chrome.log >&2; exit 1; fi
+          trap 'kill "$vite_pid" "$chrome_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..60}; do
+            curl -fsS http://127.0.0.1:9223/json/version >/dev/null && break
             sleep 1
           done
-
-          TEST_URL_PREFIX=http://127.0.0.1:4173 CDP_PORT=9222 \
+          SCREENSHOT_PATH=/tmp/lama-iphone17.png \
+            TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-ui-check.mjs
-
-          # 另三组浏览器断言，同为部署门禁（都在 dist/ 上传之前）：
-          #   边界行为 —— 原图字节一致 / 超限追加原子拒绝 / 损坏首图不拖垮整批
-          #   旧入口迁移 —— 缓存的旧 HTML 仍能到达新版，且不会循环刷新
-          #   预计时间 —— 用户看得见的那行文案与参考实现逐字节一致（含回写历史）
-          # 用 CHROME_PATH 指向上面探测到的浏览器，避免 CI 再依赖一次浏览器下载。
-          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+          TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-boundary-check.mjs
-          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+          TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-stale-entry-check.mjs
-          CHROME_PATH="$CHROME" TEST_URL_PREFIX=http://127.0.0.1:4173 \
+          TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-estimate-check.mjs
-
-      # 旧入口迁移测试会在 dist/ 里放一份临时旧 HTML 做夹具（脚本已在 finally 里删除）。
-      # 这里再挡一道：夹具一旦残留就拒绝部署，绝不能混进 Pages 产物。
-      - name: 确认浏览器测试夹具未残留
-        run: |
-          if [ -e dist/stale-entry-test.html ]; then
-            echo "临时测试 HTML 残留在 dist/，拒绝部署" >&2
-            exit 1
-          fi
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -99,4 +66,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

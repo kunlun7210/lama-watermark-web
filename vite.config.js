@@ -6,11 +6,7 @@ import { join } from 'node:path'
 // 页面启动时比对两者，不一致就自动刷新一次（拿到新 HTML/JS），
 // 避免端上「旧 HTML + 新 JS」的缓存混合态；Cache Storage 里的模型缓存不受刷新影响。
 const APP_VERSION = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
-
-// 界面上展示给用户的版本号与日期。
-// 语义版本以 package.json 为唯一真相源 —— 避免「改了代码忘了改页面上的版本号」。
 const APP_SEMVER = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
-// 用本地日期而不是 UTC：用户在北京时间后半夜构建时，UTC 会退回前一天，显示出来就错了。
 const now = new Date()
 const BUILD_DATE = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`
 
@@ -19,31 +15,17 @@ function versionPlugin() {
   return {
     name: 'app-version',
     configResolved(resolved) { outDir = resolved.build.outDir },
-    closeBundle() {
-      mkdirSync(outDir, { recursive: true })
-      writeFileSync(join(outDir, 'version.json'), JSON.stringify({ version: APP_VERSION }))
-    },
-  }
-}
-
-/**
- * 给固定入口加上构建版本查询参数：assets/app.js?v=20260921123456。
- * 路径固定解决「旧 HTML 引用已删除文件」的 404；查询参数负责让浏览器/CDN
- * 把新构建当作新资源，而不会命中十分钟的旧缓存。
- */
-function appEntryQueryPlugin() {
-  const stamp = APP_VERSION
-  const rewrite = (html, file) => html.replace(
-    new RegExp(`(assets\\/${file})(?=["'])`, 'g'),
-    `$1?v=${stamp}`,
-  )
-  return {
-    name: 'app-entry-query',
     transformIndexHtml: {
       order: 'post',
       handler(html) {
-        return rewrite(rewrite(html, 'app\\.js'), 'app\\.css')
+        // 入口文件名保持稳定，查询参数负责区分构建。旧 HTML 即使仍在浏览器/CDN
+        // 缓存中，也不会再引用一个部署后已经被删除的哈希文件。
+        return html.replace(/(\.\/assets\/app\.(?:js|css))(?=["'])/g, `$1?v=${APP_VERSION}`)
       },
+    },
+    closeBundle() {
+      mkdirSync(outDir, { recursive: true })
+      writeFileSync(join(outDir, 'version.json'), JSON.stringify({ version: APP_VERSION }))
     },
   }
 }
@@ -55,25 +37,13 @@ export default defineConfig({
     __APP_SEMVER__: JSON.stringify(APP_SEMVER),
     __BUILD_DATE__: JSON.stringify(BUILD_DATE),
   },
-  plugins: [versionPlugin(), appEntryQueryPlugin()],
+  plugins: [versionPlugin()],
   build: {
-    // 入口与样式的文件名**固定**，不再带内容哈希 —— 理由是缓存自救：
-    // 用户可能拿着缓存里的旧 HTML，而它引用的 assets/index-<hash>.js 已被本次部署删掉，
-    // 于是入口 JS 直接 404，连「检查版本 → 自动刷新」的那段代码都跑不起来
-    // （入口 JS 救不了「入口 JS 已经 404」）。固定成 app.js / app.css 后，
-    // 旧 HTML 引用的路径永远存在；新旧内容的区分交给 URL 上的构建版本参数。
     rollupOptions: {
       output: {
-        // 只把主入口钉成 app.js。推理 Worker 走 `?worker&inline` 内联进主包，
-        // 不是独立入口（产物里只有一个 JS），所以 isEntry 就等于「唯一入口」。
-        // 其余 chunk / 资源仍带哈希，避免同名互相覆盖。
-        entryFileNames: chunk => (chunk.isEntry ? 'assets/app.js' : 'assets/[name]-[hash].js'),
-        chunkFileNames: 'assets/[name]-[hash].js',
-        assetFileNames: assetInfo => {
-          const names = assetInfo.names || (assetInfo.name ? [assetInfo.name] : [])
-          if (names.some(name => name.endsWith('.css'))) return 'assets/app.css'
-          return 'assets/[name]-[hash][extname]'
-        },
+        entryFileNames: 'assets/app.js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/app[extname]',
       },
     },
   },
@@ -87,12 +57,7 @@ export default defineConfig({
     conditions: ['onnxruntime-web-use-extern-wasm', 'module', 'browser', 'development|production'],
   },
   server: {
-    // allowedHosts 是开发/预览服务器对 Host 头的白名单校验（防 DNS rebinding）。
-    // 用「点开头」的通配子域而不是 true：保持校验开启，只放行确实需要的域名。
-    // ⚠️ 托管平台（WorkBuddy/CloudStudio 沙箱）转发过来的 Host 是**内部沙箱域名**
-    //    （形如 3000-<sandboxId>.e2b.<region>.sandbox.cloudstudio.club），不是对外那个
-    //    lama-watermark.app.workbuddy.host。只放行后者会被拦成
-    //    403 "Blocked request. This host ... is not allowed."（页面白屏、连 HTML 都拿不到）。
+    // 保留仓库 1 既有的 WorkBuddy / CloudStudio 备份预览兼容性。
     allowedHosts: ['.trycloudflare.com', '.workbuddy.host', '.cloudstudio.club'],
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
@@ -100,7 +65,6 @@ export default defineConfig({
     },
   },
   preview: {
-    // 同上：托管平台用 `vite preview` 提供构建产物
     allowedHosts: ['.trycloudflare.com', '.workbuddy.host', '.cloudstudio.club'],
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',

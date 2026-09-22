@@ -1,23 +1,22 @@
 {
-  "name": "iphone-lama-watermark-remover",
+  "name": "xiaolin-watermark-web",
   "private": true,
-  "version": "0.17.2",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/copy-ort.mjs",
     "prepare:model": "node scripts/prepare-model.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node scripts/verify-models.mjs && node scripts/verify-gemini.mjs && node scripts/verify-thread-policy.mjs && node scripts/verify-oom-retry.mjs && node scripts/verify-inference-controller.mjs && node scripts/verify-zip.mjs && node scripts/verify-batch-limits.mjs && node scripts/verify-batch-estimate.mjs && npm run build && node scripts/verify-build-entry.mjs",
-    "preview": "vite preview --host 0.0.0.0",
-    "start": "npm run build && vite preview --host 0.0.0.0 --port ${PORT:-4173}"
+    "test": "node scripts/verify-models.mjs && node scripts/verify-gemini.mjs && node scripts/verify-thread-policy.mjs && node scripts/verify-inference-controller.mjs && node scripts/verify-oom-retry.mjs && node scripts/verify-job-store.mjs && node scripts/verify-batch-estimate.mjs && node scripts/verify-zip.mjs && npm run build && node scripts/verify-release-assets.mjs",
+    "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
     "coi-serviceworker": "0.1.7",
     "onnxruntime-web": "1.26.0"
   },
   "devDependencies": {
-    "playwright": "^1.63.0",
+    "playwright": "1.63.0",
     "vite": "8.3.0"
   }
 }

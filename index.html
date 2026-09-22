@@ -12,9 +12,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="LaMa 去水印" />
+    <meta name="apple-mobile-web-app-title" content="Xiaolin 去水印" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2370e0b6'/%3E%3Cpath d='M16 35h32M22 25h20M27 45h10' stroke='%23081420' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <title>LaMa 去水印</title>
+    <title>Xiaolin 去水印</title>
     <script>
       window.coi = {
         coepCredentialless: () => false,
@@ -31,7 +31,7 @@
           <span class="eyebrow">本机浏览器推理 · 图片不会上传</span>
           <span class="app-version" id="app-version"></span>
         </div>
-        <h1>LaMa 去水印</h1>
+        <h1>Xiaolin 去水印</h1>
         <p>支持 Gemini、豆包、即梦、千问、清言、元宝、文心、小红书。</p>
       </header>
 
@@ -50,11 +50,6 @@
           <span class="picker-hint">可多选 · JPG / PNG / WebP / HEIC</span>
         </div>
         <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
-        <!-- 主流程只显示「当前用的是哪个模型」，不摆出选项让用户二选一。
-             理由：INT8 与 FP32 的实测差异 MAE 仅 2.45/255（可辨像素 0.3%），
-             但 FP32 要多下 136MB、建会话慢 26 倍、低内存机型有 OOM 风险 ——
-             把选择权交给用户等于制造一个很容易选错的选择。
-             想对比测试的人仍可从下面的折叠区切换。 -->
         <div class="model-summary">
           <span class="model-summary-label">本地 AI 模型</span>
           <span class="model-summary-value"><strong id="current-model-label">INT8 · 62MB</strong><em id="cache-tag-current" class="model-cache-tag">检查中</em></span>
@@ -73,7 +68,7 @@
             <label class="model-option">
               <input type="radio" name="model" value="fp32" />
               <span>
-                <span class="model-line"><strong>FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
+                <span class="model-line"><strong>FP32 模型 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
                 <small>画质基准，手机端不推荐，无明显视觉提升。</small>
               </span>
             </label>

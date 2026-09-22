@@ -1,180 +1,75 @@
-# LaMa 去水印 · iPhone 浏览器版
+# Xiaolin 去水印
 
-纯浏览器 LaMa 去水印。图片与推理全部留在浏览器内，不需要后端服务器，也不向任何网站上传图片。
+面向 iPhone Safari 的免费批量去水印网页。图片、识别和 LaMa 推理都在浏览器本机完成，不需要账号、服务器或常开 Mac。
 
-- 在线版（GitHub Pages，随 `main` 自动部署）：<https://kunlun7210.github.io/lama-watermark-web/>
-- 在线版（托管站点）：<https://lama-watermark.app.workbuddy.host/>
-- 版本号显示在页面右上角（语义版本 + 构建日期，可用来确认 Safari 是否已更新到最新部署）。
-  **唯一真相源是 `package.json`**，由 vite 构建时注入 —— 本文件不重复维护版本号，避免发版时漏改。
+- 在线版：<https://kunlun7210.github.io/lama-watermark-web/>
 
-识别规则与 Mac 版 **Remove Watermark（WatermarkBatchLite）完全同源**：本仓库把 Mac 版的 Python 检测器逐条移植为前端 JS，几何、锚点、阈值、位图模板保持一致。
+本仓库是唯一正式版本：使用新版任务恢复与结果内存管理，同时保留同源模型分片和原 GitHub Pages 地址。
 
-## 支持的平台
+## 能做什么
 
-| 平台 | 水印位置 | 检测方式 |
-| --- | --- | --- |
-| Gemini | 右下「✦」四角星火花 | 内置 Alpha 模板匹配 + 反 Alpha 还原；质量不足时退回 LaMa 局部修复 |
-| 豆包 | 右下「豆包AI生成」 | 模板多尺度（7 档）+ 对比度/字形双确认 |
-| 即梦 | 左上「AI生成」+ 右下「即梦AI」 | 右下为识别信号，左上独立确认后一并修复 |
-| 千问 | 右下「千问AI生成」 | 位图模板 + 高通用字形相关 |
-| 智谱清言 | 右下「清言·AI生成」 | 位图模板 + 高通用字形相关 |
-| 元宝 | 右下「元宝 AI生成」（亮/暗两种） | 位图模板 + 双极性对比度 |
-| 文心 | 左下「文心AI生成」 | 位图模板 + 对比度/字形双确认 |
-| 小红书 | 右下「小红书号：…」旧版与白色「小红书」徽标 | 旧版暗度模板相关；新版 Canny 边缘模板 + 形状掩膜 |
+- 一次选择并顺序处理 10–20 张，也支持继续追加；单个可恢复批次上限为 40 张或 220MB 原图。
+- 识别 Gemini、豆包、即梦、千问、清言、元宝、文心和小红书水印；未识别时保持原图。
+- Gemini 先尝试专用反向 Alpha 还原；质量检查不通过时自动改用 LaMa 局部修复。
+- 主界面默认只显示 INT8 62MB；FP32 198MB 收在“模型信息”中，并注明手机端不推荐、无明显视觉提升。
+- 每完成一张立即把结果写入 IndexedDB，并释放内存中的完整结果；预览、分享和 ZIP 需要时再读取。Safari 重载后会恢复原图、已完成结果和剩余任务。
+- 超过 40 张或 220MB 的追加会在改动队列前整体拒绝，已有任务和结果保持不变；单张损坏也不会再清空其他可恢复图片。
+- “未识别、保持原图”直接复用输入文件，不经过 canvas 重编码，下载和 ZIP 中的字节保持不变。
+- iOS 用系统分享面板批量存入相册；也可生成包含全部结果的 ZIP。
+- 首次下载的固定版本模型按分段缓存，之后可直接从本机缓存读取。
+- 页面右上角显示语义版本和构建日期，用于确认 Safari 是否已经更新到最新部署。
 
-识别不到时**保持原图**，不会猜测位置或涂抹。一张图含多处已支持的水印会逐处修复（如即梦双水印、同时带文心+千问的图）。
+Gemini 识别与专用还原使用内置的 48px / 96px Alpha 模板，解码后合计 11,520 bytes，不需要下载额外模型。
 
-### Gemini 为什么是单独一条链
+## 这版解决的问题
 
-Gemini 的火花水印是半透明叠加，理论上可以直接反解出被盖住的底色，不需要猜。所以 `src/gemini.js` 分两步走：
+| 原问题 | 当前做法 |
+| --- | --- |
+| 模型下载受单一线路影响 | 仓库保留审核过的模型分片，以固定提交的 jsDelivr、Hugging Face 固定 revision 和同源 Pages 三路下载；完整拼装后校验 SHA-256。 |
+| 模型误更新 | CI 同时核对审核版本、尺寸、SHA-256、分片清单和仓库中的实际二进制。 |
+| Safari 重载只恢复原图 | 原图任务和每张完成结果分库存储，重载后可直接继续；整批完成后重开页面不会无意义地初始化模型。 |
+| 边界错误破坏已有批次 | 超限追加在写库前原子拒绝；恢复时逐项读取结果，单个损坏或读取失败不会清空整批。 |
+| 未识别 JPEG 被再次压缩 | 未识别项直接保存原始 File，文件字节、格式与元数据不再经过 canvas 改写。 |
+| 旧 HTML 引用已删除入口 | JS/CSS 使用稳定文件名并带构建查询参数；迁移桥保留审计涉及的前两版旧入口，避免本次切换出现 404。 |
+| 推理超时无法停止 | ONNX Runtime 放进独立 Web Worker；会话初始化或单张推理超过 120 秒都会终止 Worker。 |
+| OOM 降线程当场不生效 | 只对明确的 WASM 内存分配错误执行 4 → 2 → 1 重建重试；降级仅影响当前页面，重新打开会恢复自动设置。 |
+| 批量结果占用两份内存 | 落盘成功后只保留缩略图和元数据，完整 Blob 在预览、分享、打包时按需从 IndexedDB 读取。 |
+| 私密浏览或隔离失效 | 内部自动按浏览器能力选择线程；普通界面不展示实现参数，排障信息保留在控制台。 |
+| 开始前不知道要等多久 | 根据本机历史耗时给出整批预计时间，处理后持续校正。 |
+| 单文件过大 | 推理控制、Worker、任务存储、规则、图像原语和 ZIP 已拆成独立模块。 |
 
-1. **模板定位**：用内置的 48px / 96px Alpha 模板做匹配（模板是打包进代码的位图数据，解码后合计 11,520 bytes，**不需要下载额外模型**）。
-2. **反 Alpha 还原**：由 Alpha 与观测像素直接算出底色，直接写回画布。
-3. **兜底**：只有还原结果的质量校验不通过时，才生成一张异形蒙版，退回 LaMa 局部修复（`method: gemini-lama`）。
+## 模型和下载
 
-两条链**同时跑**：一张图可能同时带 Gemini 与其他平台的水印，识别到 Gemini 不会跳过豆包/即梦等规则，反之亦然。
-
-## 两个模型
-
-| 选项 | 下载量 | 输入 | 用途 |
+| 模型 | 大小 | SHA-256 | 来源提交 |
 | --- | ---: | --- | --- |
-| INT8 | 62,074,990 bytes | `[1,4,512,512]` | 默认。降低首次下载和内存压力 |
-| FP32 | 208,044,816 bytes | 图像 `[1,3,512,512]` + 遮罩 `[1,1,512,512]` | 接近 Mac 版的画质基准；手机端不推荐，视觉提升不明显 |
+| INT8 | 62,074,990 bytes | `cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe` | `g-ronimo/lama@418036c6…` |
+| FP32 | 208,044,816 bytes | `1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6` | `Carve/LaMa-ONNX@c3c0c9e4…` |
 
-两个模型都按不超过 16MiB 的静态分段发布，**下载层针对手机弱网做了处理**：
-
-- **只下一次**：分段写进 Cache Storage（磁盘持久），关掉浏览器再打开也是零请求。INT8 与 FP32 各自独立缓存、可以同时留着（缓存键是完整相对路径 + 固定合成 origin，不会互相覆盖）。每个型号名后面用一枚小标签直接标出「已缓存 / 未缓存 / N/M 段」。
-- **断线续传**：失败后按 `Range: bytes=<已下载>-` 接着下，不清零重来；空闲 45 秒才判定超时。
-- **自动换源**：默认走 **jsDelivr 镜像**（国内通常比 github.io 快），失败或明显慢（< 120 KB/s）时切回同源，并记住能用的那个源；`?source=origin` 可强制同源优先。清单文件本身也走镜像。
-- **完整性校验**：拼装后算 SHA-256（取清单里的值）比对，不一致就清缓存并明确报错，不会拿着被截断的模型继续跑。
-- 进度行会显示当前速度、预计剩余时间和正在使用的源。
-
-Safari 对「未添加到主屏幕」的站点最多保留 7 天缓存，**建议把页面添加到主屏幕**，这样模型一次下载长期有效。
-
-## 推理跑在独立线程里
-
-这一版把 ONNX 推理从主线程搬进了 Web Worker。直接收益不是"整体更快"，而是**主线程被释放**——推理期间界面不再冻结。
-
-| 指标（20 张 Gemini，同机同批，模型已缓存） | 主线程推理 | Worker 推理 |
-| --- | ---: | ---: |
-| 整批墙钟 | 161.6 s | **146.0 s** |
-| 主线程长任务个数 | 37 | **20** |
-| 长任务累计时长 | 157 s | **79 s** |
-| 页内心跳平均间隔 | 1405 ms | **120 ms** |
-
-三条机制：
-
-- **超时能真正终止**：旧的 `Promise.race([run, timeout])` 只是"不再等待"，底层 `session.run` 仍在跑、WASM 内存也不释放。现在**推理与模型初始化都有 120 秒超时**（初始化卡住时旧版会永远停在"正在初始化模型"，没有任何出路），超时直接 `worker.terminate()`——进程级终止，连带回收 WASM 内存与线程池。
-- **OOM 免刷新重建**：只在**确属 WASM 内存错误**时才降级重建（`out of memory`、`allocation failed`、`memory access out of bounds`、`std::bad_alloc` 等）。像 `RangeError`、"后端不可用"这类**降线程也解决不了**的错误直接失败，不再白白降级一次。降级按 4 → 2 → 1，当场 `terminate()` 旧 Worker 并**重试同一张**；旧版必须刷新页面才生效。
-- **线程数跟随设备，不做持久化**：跨源隔离生效时最多 4 线程，否则退回 1 线程。降级**只记在本次页面的内存里**，刷新或重开就按设备能力重新评估——一次偶发 OOM（例如当时后台开着别的标签页）不会把设备永久钉在低线程。旧版曾把降级写进 `localStorage`，升级后会在启动时主动清除。
-
-线程数不显示在界面上（对用户没有意义），排障信息留在控制台。
-
-### 一个反直觉的发现
-
-移植后"单次最长长任务"几乎没变（5546 ms → 4685 ms）。只看这一项会误判"没有改善"。用 CDP Profiler 采样归因：热点是 `ccorrMax`（35.3%）与 `nccMax`（13.1%），定义在 `imaging.js`、由 `rules.js` 调用——那是**水印定位的互相关搜索**，占主线程约 48%，与推理无关，也不在本次改动范围内。要提速得单独做降采样或预计算。
-
-因此界面上「页面短暂无响应属于正常现象」这句依然成立。
-
-## 批量处理
-
-按钮只有四个：**开始批量处理**、**存入相册**、**打包下载（ZIP）**、**清空列表**（处理中会出现 **停止**）。
-
-- **一次多选**：文件选择框支持 `multiple`，iPhone 上就是相册多选；也支持继续追加（可分批选）。
-- **严格逐张**：一张处理完再下一张，复用同一个模型会话，不并发 —— 与 Mac 版一致，避免手机内存峰值。
-- **存入相册**：把全部结果一次性交给系统分享面板，在面板里选「存储图像」即写入「照片」。iOS 上这是唯一能把网页里的图片写进相册的途径，所以它是主按钮；单张可以在列表里点「存图」。
-- **队列列表**：每行显示缩略图、识别到的平台、区域数、耗时；点一下整行即预览该张。
-- **打包下载（ZIP）**：留档 / 电脑端处理时用。无依赖的 STORE 方式打包（`src/zip.js`），Blob 分片拼装，文件内容不复制进 JS 堆，文件名带 UTF-8 标记，一张都不会少：处理过的命名成 `去水印-序号-原名`，未识别的以 `原图-序号-原名` 放入。
-- **输出格式跟 Mac 版一致**：`.jpg/.jpeg` 源按 JPEG 质量 95 输出，其余保持 PNG。
-- **模型切换会重跑**：INT8 / FP32 切换后，已完成的条目会被标记为需要重跑，点「开始批量处理」即用新模型重算。
-- **意外中断可恢复**：所选文件（≤40 张且 ≤200MB）写入 IndexedDB，Safari 因切后台重载后会自动恢复列表。
-
-### 刷新不白跑（结果落盘）
-
-- 每张完成**立即**把结果写进 IndexedDB，与「所选文件」分库存储。Safari 重载后列表还原成「已完成」，而不是重跑一遍。
-- 「未识别 · 保持原图」同样落盘 —— 它的结论是"这张不用改"，重跑也只会得出同样结论，一并恢复才不会让人以为那张没处理过。
-- 空间不足时按**实时余量**跳过落盘，并在队列行说明原因，不静默丢失。
-- **整批都已完成时不预热模型**：这种恢复场景下用户多半只是回来看看结果或下载，没必要为此下载 62MB 或建一次 WASM 会话。只有确实还有待处理的图，才会在后台把模型准备好。
-
-## 规则一致性验证（2026-09-19）
-
-用 Mac 版自带的 Python 检测器在 `~/Downloads/水印测试集/`（79 张、6 个平台）上生成基准，再让浏览器端 JS 跑同一批图，逐张比较「识别到的平台 + 修复矩形坐标」：
-
-| 结果 | 数量 |
-| --- | ---: |
-| 完全一致（平台与矩形坐标误差 ≤2px） | **74 / 79** |
-| 识别不一致 | 0 |
-| 坐标偏差 | 0 |
-| 两端都无法解码（`.JPG` 实为 HEIC，Chrome 与 PIL 均不支持） | 5 |
-
-矩阵覆盖：豆包 12、即梦 4、千问 16、清言 20、元宝/文心 13、小红书 14。移植期间修掉的三处偏差记录在 [EVALUATION.md](./EVALUATION.md)。
-
-Gemini 不在上述 Python 基准内（Mac 版的对应实现是另一套）。它单独用 24 张 Gemini 测试集验收，覆盖「反 Alpha 直接还原」与「质量不足退回 LaMa」两条分支。
-
-## 浏览器端实测
-
-以下均为 INT8、4 线程、`crossOriginIsolated = true`，跑在**线上地址**、iPhone 视口下。
-
-真实 WebKit（Safari 内核）：
-
-| 样例 | 识别结果 | 区域数 | 总耗时 |
-| --- | --- | ---: | ---: |
-| 豆包 | 豆包 | 1 | 13.9 s |
-| 即梦 | 即梦AI（上+下） | 2 | 11.6 s |
-| 千问 | 千问AI | 1 | 4.2 s |
-| 小红书 | 小红书 | 1 | 5.8 s |
-| 元宝/文心 A | 元宝AI | 1 | 5.6 s |
-| 元宝/文心 B | 元宝AI | 1 | 4.9 s |
-| Gemini | Gemini | 1 | 8.6 s |
-| 智谱清言 | 未识别 → 保持原图 | 0 | 0.5 s |
-
-清言该样张判为「未识别」是**既有规则判定**：与移植前版本对同批样张做 A/B，结果与耗时一致（0.6 s / 0.7 s / 0.6 s），并非本次改动引入。
-
-其他实测：
-
-- **批量**：20 张 Gemini 连续处理，整批 146.0 s（模型已缓存）；27 张连续批量（含 4 张无法解码）无卡顿、无内存失败。
-- **ZIP**：`unzip -t` 无错误；`ditto -x -k` 解出中文名与 PNG/JPG 尺寸正常。
-- **线上端到端**：两站均跑通真实上传 → 识别 → 推测 → 合成，控制台错误 0。
-- **跨源隔离**：托管站点靠响应头（`public/_headers`）直接提供 COOP/COEP；GitHub Pages 不能自定义响应头，靠 `coi-serviceworker` 补。两站在真实 WebKit 上都是 `isolated = true`、多线程可用。
+默认顺序为固定提交的 jsDelivr → 固定 revision 的 Hugging Face → 同源 Pages。jsDelivr 只做整段下载；另外两个源支持严格 `Range` 校验和段内续传。换源时从当前分段开头重下，完整拼装后再次校验 SHA-256。`?source=hf` 可优先 Hugging Face，`?source=origin` 可优先 Pages。
 
 ## 本地运行
 
 ```bash
 npm install
-npm test          # 模型 SHA-256 校验 + Gemini 一致性 + 线程策略 + 构建
+npm test
 npm run dev
 ```
 
-Vite 本地服务直接返回 COOP/COEP 响应头。GitHub Pages 不支持自定义这些响应头，因此生产页使用固定版本的 `coi-serviceworker` 在首次打开时刷新一次，为 ONNX Runtime Web 启用 WASM 多线程。
-
-浏览器回归脚本需要另行启动带 CDP 的 Chrome：
+真实浏览器回归脚本需要另行启动带 CDP 的 Chrome：
 
 ```bash
-npm test                                              # 模型校验 + 规则/策略单测 + 构建
-
-node scripts/browser-ui-check.mjs                      # 版本号/文案/布局断言（CDP，可指向线上地址）
-node scripts/browser-batch-test.mjs                    # 真实批量处理 + 主线程阻塞读数
-node scripts/browser-gemini-parity.mjs                 # Gemini 与既有规则并行、互不干扰
-node scripts/browser-webkit-check.mjs <url> [样张…]     # 真 Safari 内核：环境诊断 + 真实处理
-node scripts/browser-ab-compare.mjs <A> <B> <样张…>     # A/B 对照：耗时 + 主线程长任务/心跳
-node scripts/browser-restore-check.mjs <url> 三张样张   # 刷新恢复的双向验证（该跳过的跳过、该预热的预热）
+node scripts/browser-ui-check.mjs
+node scripts/browser-boundary-check.mjs
+node scripts/browser-stale-entry-check.mjs
+node scripts/browser-batch-test.mjs /绝对路径/水印测试集
+node scripts/browser-completed-restore-check.mjs
+MODEL=fp32 node scripts/browser-single-test.mjs /绝对路径/一张测试图.png
+node scripts/browser-gemini-parity.mjs /绝对路径/Gemini测试集 tests/gemini-parity-expected.json /绝对路径/非Gemini测试集
+node scripts/browser-zip-check.mjs
 ```
 
-`browser-ui-check.mjs` 支持用 `TEST_URL_PREFIX` 指向线上地址复跑同一套断言；版本号只锁语义版本、日期只校验格式，因此不会因为"不是当天构建"而误报。
+## 验证
 
-后三个脚本依赖 Playwright（已在 devDependencies；首次使用 WebKit 引擎需 `npx playwright install webkit`）。它们需要外部样张，所以不进 CI。
+当前实测结果见 [VALIDATION.md](./VALIDATION.md)。历史基线和规则移植记录保留在 [docs/BASELINE-EVALUATION.md](./docs/BASELINE-EVALUATION.md)。
 
-CI 两层：`Deploy GitHub Pages` 里 `npm test` 与**浏览器 UI 断言（部署门禁）**都在 `build` job 内、`deploy` 之前 —— 断言失败整个 job 就失败，**Pages 不会更新**；`Browser UI check (PR)` 只在 PR 上跑同一套断言。断言跑在 `vite preview` 的**构建产物**上，而不是 dev server 的源码上 —— tree-shaking、压缩、`import.meta.env` 替换、`?worker&inline` 这些只在构建后才成形。
-
-已实测的结论与依据见 [VALIDATION.md](./VALIDATION.md)（含未验证项清单）。
-
-## 模型来源与许可
-
-- FP32：[`Carve/LaMa-ONNX`](https://huggingface.co/Carve/LaMa-ONNX)，固定提交 `c3c0c9e468934d62e79c329e35d82dd09ff8c444`，Apache-2.0。
-- INT8：[`g-ronimo/lama`](https://huggingface.co/g-ronimo/lama)，固定提交 `418036c6b541e526cdbb0bead1ec3a87dabede53`，Apache-2.0。
-- 网页运行时：[`onnxruntime-web`](https://www.npmjs.com/package/onnxruntime-web) 1.26.0，MIT。
-- GitHub Pages 多线程兼容层：[`coi-serviceworker`](https://github.com/gzuidhof/coi-serviceworker) 0.1.7，MIT。
-- 水印检测规则与位图模板：移植自 Mac 版 Remove Watermark（同一作者的本地工具），模板为纯位图数据，随仓库一并分发。
-- Gemini 的 Alpha 模板来自 WatermarkBatchLite 0.7.2，同样是纯位图数据。
-
-各组件的说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+模型与第三方组件许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。

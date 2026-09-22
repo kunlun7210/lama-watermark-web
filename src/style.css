@@ -7,11 +7,8 @@
      显式声明 100% 关掉它，让字号完全由 CSS 决定。 */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* 「一行字的高度」—— 整个界面从顶部再往下让一行的量。
-     取值来自实测：eyebrow 那行（13px、line-height: normal）在本机浏览器里
-     行盒高 18.5px，下移量就照这个数走，而不是凑一个整数。
-     注意 18.5px 是「行盒高度」（含 leading），不等于 13px 字号本身 ——
-     若将来改 eyebrow 字号或给它加 line-height，这个值要跟着重量。 */
+  /* eyebrow 的 13px 字号在浏览器里的实际行盒高度为 18.5px。
+     顶部下移按行盒计算，才能与稳定版保持一致。 */
   --one-line: 18.5px;
 }
 
@@ -36,7 +33,7 @@ body {
 .shell {
   width: min(980px, 100%);
   margin: 0 auto;
-  /* 顶部 = 原有的 28px 留白 + 一行字（18.5px）= 46.5px，即整页从顶部下移一行。 */
+  /* 顶部 = 原有 28px 留白 + eyebrow 一行 18.5px。 */
   padding: 46.5px 16px 32px;
   padding-top: calc(max(28px, env(safe-area-inset-top)) + var(--one-line));
   padding-right: max(16px, env(safe-area-inset-right));
@@ -44,12 +41,8 @@ body {
   padding-left: max(16px, env(safe-area-inset-left));
 }
 header { padding: 8px 4px 12px; }
-/* eyebrow 行：左侧是元信息，右侧是版本号。
-   用 flex + wrap —— 390pt 窄屏上两者挤不进一行时，版本号换到第二行，
-   而不是把左边的文案压缩或直接溢出（四机型审计会验这一点）。 */
 .eyebrow-row { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; }
 .eyebrow { color: #75d7b4; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
-/* 版本号：次级灰、等宽数字（tabular-nums），避免每次构建数字宽度跳动 */
 .app-version { color: #7b8ba3; font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 h1 { margin: 10px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
 header p, .footnote { color: #aab5c8; line-height: 1.65; }
@@ -59,18 +52,11 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 header p { margin: 8px 0 4px; font-size: 14px; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
-/* 主流程只回答「现在用的是哪个模型」，不摆选项。低内存机型上 FP32 有 OOM 风险，
-   且实测画质差异可辨像素仅 0.3% —— 让用户在两个模型间二选一是制造犯错机会。
-   注意这里是「标签 + 值」顺排（gap），不是两端对齐：卡片较宽时 space-between
-   会把值推到最右边、中间空出一大片，视觉上很散（按用户反馈改的）。 */
 .model-summary { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-summary-label { color: #99a6bb; font-size: 13.5px; }
 .model-summary-value { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .model-summary-value strong { font-size: 14.5px; white-space: nowrap; }
 .model-summary-hint { margin: 0; color: #7b8ba3; font-size: 12px; line-height: 1.5; }
-/* 折叠区刻意做小做灰：需要它的人找得到，不需要的人不会去点。
-   名字用中性的「模型信息」——「高级选项」本身就带暗示，等于换个方式诱导。
-   用原生 details/summary，不引入 JS 状态。 */
 .model-more > summary { cursor: pointer; color: #7b8ba3; font-size: 12.5px; padding: 2px; list-style: none; }
 .model-more > summary::-webkit-details-marker { display: none; }
 .model-more > summary::before { content: '▸ '; }
@@ -145,8 +131,6 @@ progress::-moz-progress-bar { background: #70e0b6; border-radius: 999px; }
 .metrics dt { color: #8f9bb0; font-size: 12px; }
 .metrics dd { margin: 4px 0 0; font-weight: 700; }
 .preview-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 14px; }
-/* 未选图时预览区只留两个标题条 —— 空的 canvas 是纯黑方块，占掉大半屏却没有任何信息，
-   还把页脚的使用说明推到需要滚动的位置。选图后由 main.js 把 data-empty 置为 false。 */
 .preview-grid[data-empty="true"] canvas { display: none; }
 figure { margin: 0; overflow: hidden; }
 figcaption { padding: 13px 15px; color: #bac5d6; border-bottom: 1px solid #2b3850; }
@@ -173,9 +157,7 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
    iPhone 17 / 17 Pro 横屏顶部有 20pt 安全区（前代是 0），所以横屏也要吃 env(top)。
    压缩后 model-option 仍有 ~64px 高、按钮 min-height 保持 50px，都在 44pt 触摸下限之上。 */
 @media (max-height: 500px) and (orientation: landscape) {
-  /* 横屏刻意不吃那「一行字」的下移量：iPhone 横屏可视高只有 390~402pt，
-     再让 18.5px 就会把「开始批量处理」推出底部 Home 指示条（此前实测只剩 11~16px 余量）。
-     竖屏下移、横屏不下移，是两种形态各自的最优解，不是遗漏。 */
+  /* 横屏高度有限，沿用稳定版的紧凑留白，不额外下移。 */
   .shell { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
   header { padding: 4px 4px 6px; }
   h1 { margin: 4px 0 3px; font-size: 24px; }
@@ -184,15 +166,7 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
   .model-picker { gap: 7px; }
   .model-option { padding: 9px 12px; }
 }
-/* ===== iOS 27 Liquid Glass 适配 =====
-   顶部栏会浮在网页内容之上做半透明淡化，实测 iPhone 17 Pro（iOS 27）首屏第一行被压得看不清。
-   整页下移让开它（40px），另加全局的那一行字（--one-line），合计基线 +40px +18.5px；
-   class 由 main.js 按系统版本（≥27）添加，旧系统完全不受影响。
-   放在文件最末，避免被上面的桌面/横屏媒体查询覆盖；只在竖屏应用（横屏工具栏位置不同，
-   且纵向空间本就紧张）。先写纯 px 回退，再写 max()/env() 版本 —— 旧 WebKit 解析失败时
-   整条声明会被丢弃，没有回退会让 padding 直接归零。 */
 @media (orientation: portrait) {
-  /* 68px = 原 28px 基线 + 40px Liquid Glass 让位 + 18.5px 一行字 */
   html.ios-liquid-glass .shell { padding-top: 86.5px; }
   html.ios-liquid-glass .shell { padding-top: calc(max(28px, env(safe-area-inset-top)) + 40px + var(--one-line)); }
 }
