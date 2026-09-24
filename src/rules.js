@@ -1,5 +1,5 @@
-// 平台水印规则集：由 macOS App（WatermarkBatchLite）的 Python 检测器逐条移植。
-// 几何、锚点、阈值、模板全部保持一致；识别不到时不猜测位置（fail closed）。
+// 平台水印规则集：既有检测器由 macOS App（WatermarkBatchLite）的 Python 版本逐条移植。
+// 每种模板独立校验几何、锚点与阈值；识别不到时不猜测位置（fail closed）。
 import { MASK_SOURCES } from './maskData.js'
 import {
   canny, ccorrMax, ccorrMinMax, dilate, gaussianBlur, hsvFromRgb, nccMax,
@@ -157,8 +157,21 @@ const minusArrays = (a, b) => {
   return out
 }
 
-/** doubao.py：多尺度模板 + 对比度最大化 */
-function detectDoubao(gray, width, height, template) {
+const DOUBAO_THRESHOLDS = {
+  classic: { minContrast: 8.0, minShapeScore: 0.45, contrastRange: 18.0, shapeRange: 0.35 },
+  v2: { minContrast: 18.0, minShapeScore: 0.36, contrastRange: 30.0, shapeRange: 0.30 },
+}
+
+export function doubaoCandidateIsValid(candidate, variant = 'classic') {
+  const thresholds = DOUBAO_THRESHOLDS[variant]
+  if (!thresholds) return false
+  return candidate.contrast >= thresholds.minContrast
+    && candidate.shapeScore >= thresholds.minShapeScore
+}
+
+/** doubao.py：单个版本的多尺度模板 + 对比度最大化 */
+function detectDoubaoTemplate(gray, width, height, template, variant) {
+  const thresholds = DOUBAO_THRESHOLDS[variant]
   const shortSide = Math.min(width, height)
   const baseScale = shortSide / 1600
   const factors = [0.78, 0.84, 0.90, 0.96, 1.00, 1.06, 1.12]
@@ -184,32 +197,50 @@ function detectDoubao(gray, width, height, template) {
     const hit = ccorrMax(window, xMax - xMin + markWidth, yMax - yMin + markHeight, kernel, markWidth, markHeight)
     const candidate = {
       x: xMin + hit.x, y: yMin + hit.y, markWidth, markHeight,
-      contrast: hit.value, factor, resized,
+      contrast: hit.value, factor, resized, variant,
     }
     if (!best || candidate.contrast > best.contrast) best = candidate
   }
-  if (!best) return { found: false, provider: '豆包', contrast: 0, shapeScore: 0 }
+  if (!best) return { found: false, provider: '豆包', contrast: 0, shapeScore: 0, variant }
   const patch = subArray(gray, width, best.x, best.y, best.markWidth, best.markHeight)
   const maskFloat = new Float32Array(best.resized.length)
   for (let i = 0; i < maskFloat.length; i++) maskFloat[i] = best.resized[i] / 255
   const shapeScore = pearson(patch, maskFloat)
-  if (!(best.contrast >= 8.0 && shapeScore >= 0.45)) {
-    return { found: false, provider: '豆包', contrast: best.contrast, shapeScore }
+  if (!doubaoCandidateIsValid({ contrast: best.contrast, shapeScore }, variant)) {
+    return { found: false, provider: '豆包', contrast: best.contrast, shapeScore, variant }
   }
   const repairPadding = Math.max(8, Math.round(shortSide * 0.006))
   return {
     found: true,
     provider: '豆包',
+    variant,
     contrast: best.contrast,
     shapeScore,
     confidence: Math.min(
-      clamp01((best.contrast - 8.0) / 18.0),
-      clamp01((shapeScore - 0.45) / 0.35),
+      clamp01((best.contrast - thresholds.minContrast) / thresholds.contrastRange),
+      clamp01((shapeScore - thresholds.minShapeScore) / thresholds.shapeRange),
     ),
     x: best.x, y: best.y, width: best.markWidth, height: best.markHeight,
     repairPadding,
     context: Math.max(160, repairPadding * 16),
   }
+}
+
+/** 经典豆包与新版「豆包AI生成」分别校验；任一通过才返回修复区域。 */
+function detectDoubao(gray, width, height, classicTemplate, v2Template) {
+  const candidates = [
+    detectDoubaoTemplate(gray, width, height, classicTemplate, 'classic'),
+    detectDoubaoTemplate(gray, width, height, v2Template, 'v2'),
+  ]
+  const found = candidates.filter(candidate => candidate.found)
+  if (found.length) {
+    return found.reduce((best, candidate) => candidate.confidence > best.confidence ? candidate : best)
+  }
+  return candidates.reduce((best, candidate) => {
+    const thresholds = DOUBAO_THRESHOLDS[candidate.variant]
+    const score = Math.min(candidate.contrast / thresholds.minContrast, candidate.shapeScore / thresholds.minShapeScore)
+    return !best || score > best.score ? { ...candidate, score } : best
+  }, null)
 }
 
 /** yuanbao.py：亮/暗双极性的元宝角标 */
@@ -682,7 +713,7 @@ export async function createRuleEngine(assetBase) {
         minContrast: 8.0, minShapeScore: 0.50, context: 64, useHighPass: true,
       })
       if (qingyan.found) push({ ...qingyan, provider: '清言AI' })
-      push(detectDoubao(gray, width, height, templates.doubao.data))
+      push(detectDoubao(gray, width, height, templates.doubao.data, masks.doubaoV2))
       push(detectXiaohongshu(gray, gray8, rgba, width, height, templates.xhsLabel.data, masks.xhsBadge))
       return regions
     },
@@ -756,7 +787,7 @@ export async function createRuleEngine(assetBase) {
           referenceShortSide: 768, anchor: 'bottom_right', offsetX: 17, offsetY: 12,
           minContrast: 8.0, minShapeScore: 0.50, context: 64, useHighPass: true,
         }),
-        豆包: detectDoubao(gray, width, height, templates.doubao.data),
+        豆包: detectDoubao(gray, width, height, templates.doubao.data, masks.doubaoV2),
         小红书: detectXiaohongshu(gray, gray8, rgba, width, height, templates.xhsLabel.data, masks.xhsBadge),
       }
     },
