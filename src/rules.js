@@ -159,14 +159,56 @@ const minusArrays = (a, b) => {
 
 const DOUBAO_THRESHOLDS = {
   classic: { minContrast: 8.0, minShapeScore: 0.45, contrastRange: 18.0, shapeRange: 0.35 },
-  v2: { minContrast: 18.0, minShapeScore: 0.36, contrastRange: 30.0, shapeRange: 0.30 },
+  v2: {
+    minContrast: 18.0,
+    minShapeScore: 0.36,
+    contrastRange: 30.0,
+    shapeRange: 0.30,
+    outline: {
+      minContrast: 20.0,
+      minShapeScore: 0.22,
+      minLeftHighPassScore: 0.32,
+      contrastRange: 30.0,
+      shapeRange: 0.20,
+      leftHighPassRange: 0.30,
+    },
+  },
+}
+
+function doubaoCandidateMatchMode(candidate, variant = 'classic') {
+  const thresholds = DOUBAO_THRESHOLDS[variant]
+  if (!thresholds) return null
+  if (candidate.contrast >= thresholds.minContrast && candidate.shapeScore >= thresholds.minShapeScore) {
+    return 'solid'
+  }
+  const outline = thresholds.outline
+  if (outline
+    && candidate.contrast >= outline.minContrast
+    && candidate.shapeScore >= outline.minShapeScore
+    && candidate.outlineLeftScore >= outline.minLeftHighPassScore) {
+    return 'outline'
+  }
+  return null
 }
 
 export function doubaoCandidateIsValid(candidate, variant = 'classic') {
-  const thresholds = DOUBAO_THRESHOLDS[variant]
-  if (!thresholds) return false
-  return candidate.contrast >= thresholds.minContrast
-    && candidate.shapeScore >= thresholds.minShapeScore
+  return doubaoCandidateMatchMode(candidate, variant) !== null
+}
+
+function doubaoOutlineLeftScore(patch, template, width, height) {
+  const blurred = gaussianBlur(patch, width, height, Math.max(1, 4 * width / 251))
+  const split = Math.max(1, Math.round(width * 0.35))
+  const source = new Float32Array(split * height)
+  const target = new Float32Array(source.length)
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < split; col++) {
+      const inputIndex = row * width + col
+      const outputIndex = row * split + col
+      source[outputIndex] = patch[inputIndex] - blurred[inputIndex]
+      target[outputIndex] = template[inputIndex] / 255
+    }
+  }
+  return pearson(source, target)
 }
 
 /** doubao.py：单个版本的多尺度模板 + 对比度最大化 */
@@ -206,20 +248,38 @@ function detectDoubaoTemplate(gray, width, height, template, variant) {
   const maskFloat = new Float32Array(best.resized.length)
   for (let i = 0; i < maskFloat.length; i++) maskFloat[i] = best.resized[i] / 255
   const shapeScore = pearson(patch, maskFloat)
-  if (!doubaoCandidateIsValid({ contrast: best.contrast, shapeScore }, variant)) {
-    return { found: false, provider: '豆包', contrast: best.contrast, shapeScore, variant }
+  let outlineLeftScore = null
+  let matchMode = doubaoCandidateMatchMode({ contrast: best.contrast, shapeScore }, variant)
+  if (!matchMode && variant === 'v2') {
+    outlineLeftScore = doubaoOutlineLeftScore(patch, best.resized, best.markWidth, best.markHeight)
+    matchMode = doubaoCandidateMatchMode({ contrast: best.contrast, shapeScore, outlineLeftScore }, variant)
+  }
+  if (!matchMode) {
+    return { found: false, provider: '豆包', contrast: best.contrast, shapeScore, outlineLeftScore, variant }
   }
   const repairPadding = Math.max(8, Math.round(shortSide * 0.006))
+  const confidence = matchMode === 'outline'
+    ? (() => {
+        const outline = thresholds.outline
+        return Math.min(
+          clamp01((best.contrast - outline.minContrast) / outline.contrastRange),
+          clamp01((shapeScore - outline.minShapeScore) / outline.shapeRange),
+          clamp01((outlineLeftScore - outline.minLeftHighPassScore) / outline.leftHighPassRange),
+        )
+      })()
+    : Math.min(
+        clamp01((best.contrast - thresholds.minContrast) / thresholds.contrastRange),
+        clamp01((shapeScore - thresholds.minShapeScore) / thresholds.shapeRange),
+      )
   return {
     found: true,
     provider: '豆包',
     variant,
+    matchMode,
     contrast: best.contrast,
     shapeScore,
-    confidence: Math.min(
-      clamp01((best.contrast - thresholds.minContrast) / thresholds.contrastRange),
-      clamp01((shapeScore - thresholds.minShapeScore) / thresholds.shapeRange),
-    ),
+    outlineLeftScore,
+    confidence,
     x: best.x, y: best.y, width: best.markWidth, height: best.markHeight,
     repairPadding,
     context: Math.max(160, repairPadding * 16),
@@ -434,17 +494,23 @@ function jimengTopScore(gray, width, height, topMask, scale) {
 function detectXiaohongshu(gray, gray8, rgba, width, height, labelTemplate, badgeMask) {
   const legacy = xhsLegacy(gray, width, height, labelTemplate)
   if (legacy.found) return legacy
-  return xhsBadge(gray, gray8, rgba, width, height, badgeMask)
+  const badge = xhsBadge(gray, gray8, rgba, width, height, badgeMask)
+  if (badge.found) return badge
+  return xhsLightAccount(gray, rgba, width, height, labelTemplate)
 }
 
 export const XHS_LEGACY_MIN_SCORE = 0.70
-const XHS_BADGE_MIN_SCORE = 0.30
+export const XHS_BADGE_MIN_SCORE = 0.25
+export const XHS_LIGHT_MIN_SCORE = 0.36
 
-function xhsLegacy(gray, width, height, template) {
+const XHS_LIGHT_MAX_FACTOR_ERROR = 0.001
+const XHS_LIGHT_POSITION_TOLERANCE = 8
+const XHS_LIGHT_MIN_WHITE_STROKE_DENSITY = 0.09
+const XHS_LIGHT_MIN_ACTIVE_COLUMN_RATIO = 0.65
+
+function findXhsLabelCandidate(source, width, height, template) {
   const factors = [0.78, 0.88, 1.00, 1.12, 1.24]
   const baseScale = Math.min(width, height) / 960
-  const darkness = new Float32Array(gray.length)
-  for (let i = 0; i < gray.length; i++) darkness[i] = 255 - gray[i]
   let best = null
   for (const factor of factors) {
     const scale = baseScale * factor
@@ -460,29 +526,131 @@ function xhsLegacy(gray, width, height, template) {
     const xMax = Math.min(width - labelWidth, expectedX + radius)
     const yMax = Math.min(height - labelHeight, expectedY + radius)
     if (xMin > xMax || yMin > yMax) continue
-    const window = searchWindow(darkness, width, xMin, yMin, xMax + labelWidth, yMax + labelHeight)
+    const window = searchWindow(source, width, xMin, yMin, xMax + labelWidth, yMax + labelHeight)
     const hit = nccMax(window, xMax - xMin + labelWidth, yMax - yMin + labelHeight, scaled, labelWidth, labelHeight)
-    const candidate = { labelX: xMin + hit.x, labelY: yMin + hit.y, labelWidth, labelHeight, scale, score: hit.value }
+    const candidate = {
+      labelX: xMin + hit.x,
+      labelY: yMin + hit.y,
+      labelWidth,
+      labelHeight,
+      expectedX,
+      expectedY,
+      scale,
+      factor,
+      score: hit.value,
+    }
     if (!best || candidate.score > best.score) best = candidate
   }
-  if (!best || best.score < XHS_LEGACY_MIN_SCORE) {
-    return { found: false, provider: '小红书', score: best ? best.score : 0 }
-  }
+  return best
+}
+
+function xhsLabelRegion(best, width, height, variant, minScore, confidenceRange = 0.25) {
   const scale = best.scale
   const boxX = Math.max(0, best.labelX - Math.round(5 * scale))
   const boxY = Math.max(0, best.labelY - Math.round(best.labelHeight * 2))
   return {
     found: true,
     provider: '小红书',
-    variant: 'legacy',
+    variant,
     score: best.score,
-    confidence: clamp01((best.score - XHS_LEGACY_MIN_SCORE) / 0.25),
+    confidence: clamp01((best.score - minScore) / confidenceRange),
     x: boxX,
     y: boxY,
     width: Math.min(width - boxX, Math.round(best.labelWidth * 2.5)),
     height: Math.min(height - boxY, Math.round(best.labelHeight * 3.2)),
     context: 64,
   }
+}
+
+function xhsLegacy(gray, width, height, template) {
+  const darkness = new Float32Array(gray.length)
+  for (let i = 0; i < gray.length; i++) darkness[i] = 255 - gray[i]
+  const best = findXhsLabelCandidate(darkness, width, height, template)
+  if (!best || best.score < XHS_LEGACY_MIN_SCORE) {
+    return { found: false, provider: '小红书', score: best ? best.score : 0 }
+  }
+  return xhsLabelRegion(best, width, height, 'legacy', XHS_LEGACY_MIN_SCORE)
+}
+
+function xhsLightSuffixFeatures(gray, rgba, width, height, best) {
+  const x0 = Math.max(0, best.labelX + Math.round(best.labelWidth * 0.92))
+  const x1 = Math.min(width, width - Math.max(2, Math.round(8 * best.scale)))
+  const y0 = Math.max(0, best.labelY - Math.round(best.labelHeight * 0.15))
+  const y1 = Math.min(height, best.labelY + Math.round(best.labelHeight * 1.15))
+  const stripWidth = x1 - x0
+  const stripHeight = y1 - y0
+  if (stripWidth <= 2 || stripHeight <= 2) {
+    return { whiteStrokeDensity: 0, activeColumnRatio: 0 }
+  }
+
+  const values = new Float32Array(stripWidth * stripHeight)
+  const saturation = new Uint8Array(values.length)
+  const value = new Uint8Array(values.length)
+  for (let row = 0; row < stripHeight; row++) {
+    for (let col = 0; col < stripWidth; col++) {
+      const sourceIndex = (y0 + row) * width + x0 + col
+      const index = row * stripWidth + col
+      values[index] = gray[sourceIndex]
+      const p = sourceIndex * 4
+      const red = rgba[p]
+      const green = rgba[p + 1]
+      const blue = rgba[p + 2]
+      const max = Math.max(red, green, blue)
+      const min = Math.min(red, green, blue)
+      saturation[index] = max ? Math.round(((max - min) / max) * 255) : 0
+      value[index] = max
+    }
+  }
+
+  const blurred = gaussianBlur(values, stripWidth, stripHeight, Math.max(1, best.scale * 1.2))
+  const activeColumns = new Uint8Array(stripWidth)
+  let whiteStrokeCount = 0
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] - blurred[i] <= 2.5) continue
+    activeColumns[i % stripWidth] = 1
+    if (saturation[i] < 80 && value[i] > 120) whiteStrokeCount++
+  }
+  let activeColumnCount = 0
+  for (const active of activeColumns) activeColumnCount += active
+  return {
+    whiteStrokeDensity: whiteStrokeCount / values.length,
+    activeColumnRatio: activeColumnCount / stripWidth,
+  }
+}
+
+export function xhsLightCandidateIsValid(candidate) {
+  const positionTolerance = Math.max(4, XHS_LIGHT_POSITION_TOLERANCE * candidate.scale)
+  return candidate.score >= XHS_LIGHT_MIN_SCORE
+    && Math.abs(candidate.factor - 1) <= XHS_LIGHT_MAX_FACTOR_ERROR
+    && Math.abs(candidate.dx) <= positionTolerance
+    && Math.abs(candidate.dy) <= positionTolerance
+    && candidate.whiteStrokeDensity >= XHS_LIGHT_MIN_WHITE_STROKE_DENSITY
+    && candidate.activeColumnRatio >= XHS_LIGHT_MIN_ACTIVE_COLUMN_RATIO
+}
+
+function xhsLightAccount(gray, rgba, width, height, template) {
+  const best = findXhsLabelCandidate(gray, width, height, template)
+  if (!best) return { found: false, provider: '小红书', variant: 'light-account', score: 0 }
+  const suffix = xhsLightSuffixFeatures(gray, rgba, width, height, best)
+  const candidate = {
+    score: best.score,
+    factor: best.factor,
+    scale: best.scale,
+    dx: best.labelX - best.expectedX,
+    dy: best.labelY - best.expectedY,
+    ...suffix,
+  }
+  if (!xhsLightCandidateIsValid(candidate)) {
+    return { found: false, provider: '小红书', variant: 'light-account', ...candidate }
+  }
+  return {
+    ...xhsLabelRegion(best, width, height, 'light-account', XHS_LIGHT_MIN_SCORE, 0.20),
+    ...suffix,
+  }
+}
+
+export function xhsBadgeCandidateIsValid(score) {
+  return Number.isFinite(score) && score >= XHS_BADGE_MIN_SCORE
 }
 
 function xhsBadge(gray, gray8, rgba, width, height, badgeMask) {
@@ -514,7 +682,7 @@ function xhsBadge(gray, gray8, rgba, width, height, badgeMask) {
     const candidate = { badgeX: xMin + hit.x, badgeY: yMin + hit.y, badgeWidth, badgeHeight, score: hit.value }
     if (!best || candidate.score > best.score) best = candidate
   }
-  if (!best || best.score < XHS_BADGE_MIN_SCORE) {
+  if (!best || !xhsBadgeCandidateIsValid(best.score)) {
     return { found: false, provider: '小红书', score: best ? best.score : 0 }
   }
 

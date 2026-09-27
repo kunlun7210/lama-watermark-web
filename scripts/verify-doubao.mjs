@@ -39,5 +39,18 @@ if (doubaoCandidateIsValid({ contrast: 17.99, shapeScore: 0.36 }, 'v2')) {
 if (doubaoCandidateIsValid({ contrast: 18, shapeScore: 0.3599 }, 'v2')) {
   throw new Error('豆包新版模板形状不足时不应通过')
 }
+if (!doubaoCandidateIsValid({
+  contrast: 24.91039826675842,
+  shapeScore: 0.24749515861683322,
+  outlineLeftScore: 0.4413572024723144,
+}, 'v2')) {
+  throw new Error('豆包空心描边样式应通过联合门槛')
+}
+if (doubaoCandidateIsValid({ contrast: 24.91, shapeScore: 0.247, outlineLeftScore: 0.3199 }, 'v2')) {
+  throw new Error('豆包空心描边样式左侧文字不匹配时不应通过')
+}
+if (doubaoCandidateIsValid({ contrast: 33.67, shapeScore: 0.2498, outlineLeftScore: -0.013 }, 'v2')) {
+  throw new Error('清言的共同 AI 生成后缀不应误判为豆包')
+}
 
 console.log(`豆包双模板校验通过：新版模板 ${foreground} 像素，SHA-256 ${digest}`)
