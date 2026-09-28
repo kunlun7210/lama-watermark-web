@@ -48,6 +48,10 @@
         <p>支持 Gemini、豆包、即梦、千问、清言、元宝、文心、小红书。</p>
       </header>
 
+      <section class="card transfer-card" id="transfer-card" hidden aria-live="polite">
+        <div class="transfer-copy"><span id="transfer-title"></span><span id="transfer-detail"></span></div>
+        <progress id="transfer-progress" max="1" value="0"></progress>
+      </section>
       <section class="card controls">
         <div class="picker" id="picker" role="button" tabindex="0" aria-label="点这里选择图片">
           <span class="picker-icon" aria-hidden="true">＋</span>

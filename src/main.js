@@ -219,6 +219,25 @@ function setMetrics(values) {
   elements.metrics.hidden = entries.length === 0
 }
 
+// 卡片位于正常文档流中。首次下载时展开，此后保留高度，避免完成/分段时反复收起。
+let transferPaintAt = 0
+function transferProgress(title, ratio = null, detail = '', force = false) {
+  const card = document.querySelector('#transfer-card')
+  if (!card || (!force && !card.hidden && performance.now() - transferPaintAt < 120)) return
+  card.hidden = false
+  transferPaintAt = performance.now()
+  document.querySelector('#transfer-title').textContent = title
+  document.querySelector('#transfer-detail').textContent = detail
+  const progress = document.querySelector('#transfer-progress')
+  if (ratio === null) progress.removeAttribute('value')
+  else progress.value = Math.max(0, Math.min(1, ratio))
+}
+
+function modelTransferProgress(model, have, total, index, count) {
+  transferProgress(`正在缓存 ${model.label}`, have / total,
+    `第 ${index}/${count} 段 · ${(have / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB`)
+}
+
 function updatePreviewVisibility() {
   if (!elements.previewGrid) return
   elements.previewGrid.dataset.empty = state.items.length ? 'false' : 'true'
@@ -516,7 +535,10 @@ async function fetchModel(model, signal) {
 
     const sources = chunkSources(relativePath, model, loaded, manifest)
     const started = performance.now()
-    const chunkBytes = await downloadChunk(chunk, sources, () => {}, signal)
+    transferProgress(`正在缓存 ${model.label}`, loaded / manifest.totalSize, '正在连接下载源', true)
+    const chunkBytes = await downloadChunk(chunk, sources, have => {
+      modelTransferProgress(model, loaded + have, manifest.totalSize, manifest.chunks.indexOf(chunk) + 1, manifest.chunks.length)
+    }, signal)
     bytes.set(chunkBytes.bytes, loaded)
     loaded += chunkBytes.bytes.byteLength
     preferredSourceLabel = chunkBytes.source.label
@@ -539,6 +561,7 @@ async function fetchModel(model, signal) {
 
   const expectedSha = manifest.sha256 || model.sha256
   if (expectedSha && crypto?.subtle) {
+    if (!document.querySelector('#transfer-card')?.hidden) transferProgress('正在校验模型', null, '', true)
     const digest = await crypto.subtle.digest('SHA-256', bytes)
     const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
     if (hex !== expectedSha) {
@@ -547,6 +570,7 @@ async function fetchModel(model, signal) {
     }
   }
   if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
+  if (!document.querySelector('#transfer-card')?.hidden) transferProgress('模型已就绪', 1, '', true)
   void refreshCacheTags()
   return bytes
 }
@@ -602,13 +626,16 @@ async function cacheLaMaForOffline(model) {
     const key = chunkCacheKey(path)
     if (!await hasCachedChunk(cache, key, chunk.size)) {
       if (!navigator.onLine) throw new Error('当前没有网络，缺少的模型分段需联网下载')
-      const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), () => {})
+      const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), have => {
+        modelTransferProgress(model, offset + have, manifest.totalSize, index + 1, manifest.chunks.length)
+      })
       await writeCachedChunk(cache, key, bytes)
     }
     offset += chunk.size
   }
   const status = await modelCacheStatus(model)
   if (!status.supported || status.have !== status.total) throw new Error('模型缓存未写完整，请检查浏览器剩余空间后重试')
+  transferProgress(`正在准备 ${model.label}`, null, '缓存离线运行文件', true)
   await cacheOfflineRuntime('lama', assetBase, APP_VERSION)
 }
 
@@ -762,7 +789,10 @@ function getSession(model) {
     return { model, loadMs: performance.now() - started, reused: false }
   })().catch(error => {
     // 只有最新一代失败才清空，否则会把后来者的状态一起清掉
-    if (generation === sessionGeneration) sessionModelId = null
+    if (generation === sessionGeneration) {
+      sessionModelId = null
+      if (!document.querySelector('#transfer-card')?.hidden) transferProgress('模型加载失败，可重试', 0, error.message, true)
+    }
     throw error
   }).finally(() => {
     if (generation === sessionGeneration) { sessionPromise = null; sessionAbort = null }
@@ -1586,10 +1616,13 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
         setStatus(`${model.label} 已缓存`, 1, '无需重复下载')
         return
       }
+      transferProgress(`正在缓存 ${model.label}`, null, '读取本机分段，补齐缺少的文件', true)
       await cacheLaMaForOffline(model)
+      transferProgress(`${model.label} 已缓存`, 1, '', true)
       setStatus(`${model.label} 已缓存到本机`, 1, '断网后可直接使用')
     } catch (error) {
       setStatus(`${model.label} 缓存失败`, 0, error.message)
+      transferProgress('缓存失败，可重新点选重试', 0, error.message, true)
     } finally {
       manualModelCachingId = null
       syncCacheControls()
@@ -1609,11 +1642,17 @@ elements.cacheOcr.addEventListener('click', () => {
   syncCacheControls()
   const task = (async () => {
     try {
-      await cacheOcrModels(assetBase)
+      transferProgress('正在缓存 PP-OCRv6-small', null, '正在下载文字识别模型', true)
+      await cacheOcrModels(assetBase, (done, total) => {
+        transferProgress('正在缓存 PP-OCRv6-small', done / total, `已缓存 ${done}/${total} 个模型文件`, true)
+      })
+      transferProgress('正在准备 PP-OCRv6-small', null, '缓存离线运行文件', true)
       await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
+      transferProgress('PP-OCRv6-small 已缓存', 1, '', true)
       setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
     } catch (error) {
       setStatus('OCR 模型缓存失败', 0, error.message)
+      transferProgress('缓存失败，可重新点选重试', 0, error.message, true)
     } finally {
       ocrCaching = false
       await refreshOcrCacheTag()

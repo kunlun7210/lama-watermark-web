@@ -22,6 +22,7 @@ async function beginLayoutSampling(page) {
         runTop: run?.top,
         previewTop: preview?.top,
         scrollY,
+        transferVisible: !document.querySelector('#transfer-card')?.hidden,
       })
     }
     sample()
@@ -32,7 +33,7 @@ async function beginLayoutSampling(page) {
 async function endLayoutSampling(page, label) {
   const samples = await page.evaluate(() => {
     clearInterval(window.__cacheLayoutTimer)
-    return window.__cacheLayoutSamples || []
+    return (window.__cacheLayoutSamples || []).filter(sample => sample.transferVisible)
   })
   assert.ok(samples.length >= 2, `${label} 布局样本不足`)
   const spreads = {}
@@ -99,6 +100,13 @@ try {
     .every(input => input.disabled))
   assert.equal(await page.locator('#file-input').isDisabled(), false, '缓存 OCR 时仍应可以选择图片')
   assert.equal(await page.locator('#download-bar').count(), 0)
+  const cardLayout = await page.evaluate(() => {
+    const card = document.querySelector('#transfer-card')
+    return { position: getComputedStyle(card).position,
+      gap: document.querySelector('.controls').getBoundingClientRect().top - card.getBoundingClientRect().bottom }
+  })
+  assert.equal(cardLayout.position, 'static')
+  assert.ok(cardLayout.gap >= 16, `状态卡与选图区域间距不足：${cardLayout.gap}px`)
   await page.waitForFunction(() => document.querySelector('#cache-tag-ocr')?.textContent === '已缓存',
     null, { timeout: 60000 })
   await endLayoutSampling(page, 'OCR 首次缓存')
