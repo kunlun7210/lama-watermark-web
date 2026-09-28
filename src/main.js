@@ -47,7 +47,7 @@ const MIRROR_REPO = 'kunlun7210/lama-watermark-web@b7cb12e5a1b74a2cf66372f903756
 const MODELS = {
   int8: {
     id: 'int8',
-    label: 'INT8 · 62MB',
+    label: 'LaMa INT8 · 62MB',
     manifest: 'models/int8/manifest.json',
     inputLayout: 'masked-rgb-mask',
     sha256: 'cab19978adc306622fe37ef60d4a52103b99c98141d499c2a2366a7ed1255dbe',
@@ -55,7 +55,7 @@ const MODELS = {
   },
   fp32: {
     id: 'fp32',
-    label: 'FP32 · 198MB',
+    label: 'LaMa FP32 · 198MB',
     manifest: 'models/fp32/manifest.json',
     inputLayout: 'image-mask',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
@@ -120,6 +120,7 @@ const ortBase = new URL('ort/', assetBase).href
 let ocrCaching = false
 let ocrCached = false
 let ocrCacheSupported = false
+let manualModelCachingId = null
 
 // 沿用原 lama-watermark-web 的键，升级到 v1.0.0 后继续识别既有缓存与恢复偏好。
 const LEGACY_THREAD_PREF_KEY = 'lama-threads'
@@ -588,6 +589,34 @@ async function modelCacheStatus(model) {
     }
     return { supported: true, have, total: manifest.chunks.length, bytes: manifest.totalSize }
   } catch { return { supported: false } }
+}
+
+/** 用户点选型号时只缓存缺少的分段，不创建推理会话或拼出整个 FP32 模型。 */
+async function cacheLaMaForOffline(model) {
+  const manifest = await fetchManifest(model)
+  if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
+  const cache = await openModelCache()
+  if (!cache) throw new Error('此浏览器不支持模型缓存')
+  let offset = 0
+  for (let index = 0; index < manifest.chunks.length; index++) {
+    const chunk = manifest.chunks[index]
+    const path = chunkRelativePath(model, chunk)
+    const key = chunkCacheKey(path)
+    if (!await readCachedChunk(cache, key, chunk.size)) {
+      if (!navigator.onLine) throw new Error('当前没有网络，缺少的模型分段需联网下载')
+      const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), (have) => {
+        setDownloadBar(true, `正在缓存 ${model.label}`, (offset + have) / manifest.totalSize,
+          `第 ${index + 1}/${manifest.chunks.length} 段 · ${((offset + have) / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`)
+      })
+      await writeCachedChunk(cache, key, bytes)
+    }
+    offset += chunk.size
+    setDownloadBar(true, `正在缓存 ${model.label}`, offset / manifest.totalSize,
+      `已检查 ${index + 1}/${manifest.chunks.length} 段`)
+  }
+  const status = await modelCacheStatus(model)
+  if (!status.supported || status.have !== status.total) throw new Error('模型缓存未写完整，请检查浏览器剩余空间后重试')
+  await cacheOfflineRuntime('lama', assetBase, APP_VERSION)
 }
 
 let preferredSourceLabel = null
@@ -1489,6 +1518,37 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   updateBatchHint()
   void refreshCacheTags()
   if (state.items.length) void warmUpModel() // 已选图时切模型，立刻预热新模型
+}))
+
+elements.modelInputs.forEach(input => input.addEventListener('click', () => {
+  if (state.running) return
+  const model = MODELS[input.value]
+  if (!model) return
+  // 已选图时沿用原有预热流程；未选图时点选卡片即可只下载到持久缓存。
+  if (state.items.length) { warmUpModel(); return }
+  if (manualModelCachingId) {
+    if (manualModelCachingId !== model.id) setStatus('已有模型正在缓存', null, '请等当前模型缓存完成后再点选')
+    return
+  }
+  manualModelCachingId = model.id
+  void (async () => {
+    try {
+      const status = await modelCacheStatus(model)
+      const runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
+      if (status.supported && status.have === status.total && runtime.ready) {
+        setStatus(`${model.label} 已缓存`, 1, '无需重复下载')
+        return
+      }
+      await cacheLaMaForOffline(model)
+      setStatus(`${model.label} 已缓存到本机`, 1, '断网后可直接使用')
+    } catch (error) {
+      setStatus(`${model.label} 缓存失败`, 0, error.message)
+    } finally {
+      setDownloadBar(false)
+      manualModelCachingId = null
+      void refreshCacheTags()
+    }
+  })()
 }))
 
 elements.cacheOcr.addEventListener('click', async () => {

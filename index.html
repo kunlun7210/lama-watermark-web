@@ -52,7 +52,7 @@
         <input id="file-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif" />
         <div class="model-summary">
           <span class="model-summary-label">本地 AI 模型</span>
-          <span class="model-summary-value"><strong id="current-model-label">INT8 · 62MB</strong><em id="cache-tag-current" class="model-cache-tag">检查中</em></span>
+          <span class="model-summary-value"><strong id="current-model-label">LaMa INT8 · 62MB</strong><em id="cache-tag-current" class="model-cache-tag">检查中</em></span>
         </div>
         <p class="model-summary-hint">首次使用需在线下载；显示“已缓存”后可离线处理。</p>
         <details class="model-more">
@@ -61,15 +61,15 @@
             <label class="model-option">
               <input type="radio" name="model" value="int8" checked />
               <span>
-                <span class="model-line"><strong>INT8 · 62MB</strong><em id="cache-tag-int8" class="model-cache-tag">检查中</em></span>
-                <small>下载和内存压力较小，画质接近 FP32</small>
+                <span class="model-line"><strong>LaMa INT8 · 62MB</strong><em id="cache-tag-int8" class="model-cache-tag">检查中</em></span>
+                <small>点选可提前缓存；下载和内存压力较小。</small>
               </span>
             </label>
             <label class="model-option">
               <input type="radio" name="model" value="fp32" />
               <span>
-                <span class="model-line"><strong>FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
-                <small>画质基准，手机端不推荐，无明显视觉提升。</small>
+                <span class="model-line"><strong>LaMa FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
+                <small>点选可提前缓存；手机端不推荐，无明显视觉提升。</small>
               </span>
             </label>
             <button id="cache-ocr" class="model-option ocr-model-option" type="button" aria-label="提前缓存 PP-OCRv6-small 文字识别模型">
