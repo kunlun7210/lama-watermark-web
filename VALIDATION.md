@@ -21,6 +21,8 @@
 - Safari/WebKit 始终沿用页面明确配置的 `COEP: require-corp`。自动化复现并修复了首次打开隔离正常、再次打开却丢失 `crossOriginIsolated` 的问题；修复后 WebKit 重开仍保持隔离，可继续使用 ONNX Runtime 多线程。
 - 模型状态检查优先读取缓存响应的长度元数据，不再为判断“已缓存”而把 62MB/198MB 分片复制进 JS 内存。并发状态检查只允许最新一轮写界面；LaMa、OCR 和批量处理期间互斥相应缓存控件，避免两套下载争用同一进度提示。
 - Chrome 完成首次接管、真实 OCR + 62MB LaMa 缓存、重复点选不重下、断网导航和资源读取；WebKit 完成真实缓存、正常重开、隔离状态和断网 Cache Storage 检查。两套浏览器均为页面错误 0。真实 iPhone 飞行模式仍需实机复核。
+- [v2.2.4 GitHub Actions run 36435370783](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36435370783) 已成功：提交 `9ae0a078dabb173fea76e24761399ff944d734f4` 的 `npm test`、真实浏览器缓存检查、构建和 Pages 部署全部通过。
+- 正式 Pages 构建 `20260928142156` 显示 `v2.2.4 · 2026.09.28`；首页、稳定 JS/CSS、Service Worker 和离线运行清单均与本地已验证构建一致。全新 Chrome 冷缓存从 jsDelivr 获取 INT8，真实 `6187.jpeg` 在 10.4 秒内完成“已去除 · 豆包 · 1 处”，浏览器异常 0。
 
 ### v2.2.3 模型界面回归
 
