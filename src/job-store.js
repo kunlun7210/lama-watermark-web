@@ -129,6 +129,7 @@ export async function saveResult(item) {
       outputBlob: item.blob,
       outputExt: item.outputExt,
       provider: item.provider,
+      ocrUnavailable: !!item.ocrUnavailable,
       regions: item.regions,
       elapsed: item.elapsed,
       inferSeconds: item.inferSeconds,

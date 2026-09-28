@@ -7,7 +7,7 @@ const source = join(root, 'node_modules', 'onnxruntime-web', 'dist')
 const target = join(root, 'public', 'ort')
 await mkdir(target, { recursive: true })
 for (const name of await readdir(source)) {
-  if (/^ort-wasm-simd-threaded\.(mjs|wasm)$/.test(name)) {
+  if (/^ort-wasm-simd-threaded(?:\.jsep)?\.(mjs|wasm)$/.test(name)) {
     await copyFile(join(source, name), join(target, name))
   }
 }

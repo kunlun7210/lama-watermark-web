@@ -43,7 +43,11 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/app.js',
         chunkFileNames: 'assets/[name].js',
-        assetFileNames: 'assets/app[extname]',
+        // OCR's bundled worker is emitted as a JS asset. Keep its own name so it
+        // cannot overwrite the stable app.js entry used by cached HTML.
+        assetFileNames: asset => asset.name?.endsWith('.js')
+          ? 'assets/[name][extname]'
+          : 'assets/app[extname]',
       },
     },
   },

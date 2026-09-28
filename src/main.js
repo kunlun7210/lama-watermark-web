@@ -709,7 +709,7 @@ function drawBitmap(canvas, bitmap) {
 }
 
 /** 识别水印：Gemini 保留专用还原结果，其余平台返回 LaMa 待修复区域。 */
-async function detectRegions(canvas) {
+async function detectRegions(canvas, onOcrFallback) {
   const width = canvas.width
   const height = canvas.height
   const context = canvas.getContext('2d', { willReadFrequently: true })
@@ -720,8 +720,20 @@ async function detectRegions(canvas) {
   const gray8 = grayFromRgb8(rgba, width, height)
   const engine = await getRuleEngine()
   const regions = engine.detect({ rgba, gray, gray8, width, height })
+  let ocrError = null
   if (gemini.status === 'needs-inpaint') regions.push(gemini.region)
-  return { regions, gemini }
+  if (!regions.length && gemini.status !== 'cleaned') {
+    try {
+      onOcrFallback?.()
+      const { detectOcrFallback } = await import('./ocr-fallback.js')
+      regions.push(...await detectOcrFallback(canvas, assetBase, ortBase))
+    } catch (error) {
+      // OCR is only a fallback. A download or runtime error must not alter the original.
+      console.warn('OCR 兜底识别失败，保持原图', error)
+      ocrError = error
+    }
+  }
+  return { regions, gemini, ocrError }
 }
 
 function applyGeminiPatch(context, gemini) {
@@ -915,7 +927,7 @@ function itemStateText(item) {
   if (item.status === 'pending') return '等待处理'
   if (item.status === 'running') return item.progressText || '处理中'
   if (item.status === 'done') return `已去除 · ${item.provider || ''} · ${item.regions || 1} 处 · ${item.elapsed || ''}${item.persistError ? ' · 结果未落盘' : ''}`
-  if (item.status === 'unchanged') return `未识别水印 · 保持原图${item.persistError ? ' · 结果未落盘' : ''}`
+  if (item.status === 'unchanged') return `${item.ocrUnavailable ? '文字识别暂不可用' : '未识别水印'} · 保持原图${item.persistError ? ' · 结果未落盘' : ''}`
   return `失败：${item.error || '未知原因'}`
 }
 
@@ -1050,7 +1062,11 @@ async function processItem(item) {
 
   item.progressText = '正在识别水印'
   renderQueue()
-  const detected = await detectRegions(elements.source)
+  const detected = await detectRegions(elements.source, () => {
+    item.progressText = '正在用文字识别补查水印（首次需下载 OCR 资源）'
+    renderQueue()
+  })
+  item.ocrUnavailable = !!detected.ocrError
   const geminiDirect = detected.gemini.status === 'cleaned'
   item.regions = detected.regions.length + (geminiDirect ? 1 : 0)
   const providers = detected.regions.map(region => region.provider)
@@ -1488,6 +1504,7 @@ async function restoreSelectedFiles() {
       item.url = null
       item.outputExt = result.outputExt
       item.provider = result.provider
+      item.ocrUnavailable = !!result.ocrUnavailable
       item.regions = result.regions
       item.elapsed = result.elapsed
       item.inferSeconds = result.inferSeconds

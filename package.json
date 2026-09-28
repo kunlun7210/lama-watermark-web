@@ -1,17 +1,18 @@
 {
   "name": "xiaolin-watermark-web",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/copy-ort.mjs",
     "prepare:model": "node scripts/prepare-model.mjs",
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node scripts/verify-models.mjs && node scripts/verify-doubao.mjs && node scripts/verify-xiaohongshu.mjs && node scripts/verify-gemini.mjs && node scripts/verify-thread-policy.mjs && node scripts/verify-inference-controller.mjs && node scripts/verify-oom-retry.mjs && node scripts/verify-job-store.mjs && node scripts/verify-batch-estimate.mjs && node scripts/verify-zip.mjs && npm run build && node scripts/verify-release-assets.mjs",
+    "test": "node scripts/verify-models.mjs && node scripts/verify-doubao.mjs && node scripts/verify-xiaohongshu.mjs && node scripts/verify-ocr-fallback.mjs && node scripts/verify-gemini.mjs && node scripts/verify-thread-policy.mjs && node scripts/verify-inference-controller.mjs && node scripts/verify-oom-retry.mjs && node scripts/verify-job-store.mjs && node scripts/verify-batch-estimate.mjs && node scripts/verify-zip.mjs && npm run build && node scripts/verify-release-assets.mjs && node scripts/verify-ocr-assets.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@paddleocr/paddleocr-js": "0.4.2",
     "coi-serviceworker": "0.1.7",
     "onnxruntime-web": "1.26.0"
   },
