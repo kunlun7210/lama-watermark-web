@@ -97,10 +97,6 @@ const elements = {
   cacheOcr: document.querySelector('#cache-ocr'),
   ocrModelHint: document.querySelector('#ocr-model-hint'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
-  downloadBar: document.querySelector('#download-bar'),
-  downloadStatus: document.querySelector('#download-status'),
-  downloadLabel: document.querySelector('#download-label'),
-  downloadProgress: document.querySelector('#download-progress'),
   batchHint: document.querySelector('#batch-hint'),
 }
 
@@ -127,8 +123,10 @@ const assetBase = new URL(import.meta.env.BASE_URL, location.href)
 const ortBase = new URL('ort/', assetBase).href
 let ocrCaching = false
 let ocrCached = false
-let ocrCacheSupported = false
+let ocrCacheSupported = typeof caches !== 'undefined'
 let manualModelCachingId = null
+let manualModelCachePromise = null
+let ocrCachePromise = null
 let cacheTagRefreshGeneration = 0
 let ocrCacheRefreshGeneration = 0
 
@@ -226,59 +224,6 @@ function updatePreviewVisibility() {
   elements.previewGrid.dataset.empty = state.items.length ? 'false' : 'true'
 }
 
-/**
- * 下载进度条固定在视口底部，不参与正文排版；高频下载回调最多每 120ms 绘制一次，
- * 避免手机上因每个网络分块都改 DOM 而反复重排、重绘。
- * 防御：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失（Safari 上实测发生过，
- * 4 张全部死于进度条取值），所以任一元素找不到就静默跳过——进度显示永远
- * 不允许影响处理流程本身。
- */
-let downloadBarPending = null
-let downloadBarTimer = null
-let downloadBarLastPaint = 0
-
-function paintDownloadBar({ visible, text = '', ratio = null, detail = '' }) {
-  const bar = elements.downloadBar || document.querySelector('#download-bar')
-  if (!bar) return
-  if (!visible) { bar.hidden = true; return }
-  const status = elements.downloadStatus || bar.querySelector('#download-status')
-  const progress = elements.downloadProgress || bar.querySelector('#download-progress')
-  const label = elements.downloadLabel || bar.querySelector('#download-label')
-  if (!status || !progress || !label) { bar.hidden = true; return }
-  bar.hidden = false
-  status.textContent = text
-  label.textContent = detail
-  if (ratio === null) progress.removeAttribute('value')
-  else progress.value = Math.max(0, Math.min(1, ratio))
-  downloadBarLastPaint = performance.now()
-}
-
-function flushDownloadBar() {
-  downloadBarTimer = null
-  if (!downloadBarPending) return
-  const update = downloadBarPending
-  downloadBarPending = null
-  paintDownloadBar(update)
-}
-
-function setDownloadBar(visible, text, ratio = null, detail = '') {
-  if (!visible) {
-    if (downloadBarTimer) clearTimeout(downloadBarTimer)
-    downloadBarTimer = null
-    downloadBarPending = null
-    paintDownloadBar({ visible: false })
-    return
-  }
-  downloadBarPending = { visible: true, text, ratio, detail }
-  const bar = elements.downloadBar || document.querySelector('#download-bar')
-  const elapsed = performance.now() - downloadBarLastPaint
-  if (bar?.hidden || elapsed >= 120) {
-    flushDownloadBar()
-  } else if (!downloadBarTimer) {
-    downloadBarTimer = setTimeout(flushDownloadBar, Math.max(0, 120 - elapsed))
-  }
-}
-
 function displayMetrics(item) {
   if (!item) return {}
   const metrics = {
@@ -293,15 +238,6 @@ function logThreadCount(reason = '') {
 }
 
 /* ---------------- 模型会话 ---------------- */
-
-function progressDetail(loaded, total, index, chunkCount, started, sourceLabel) {
-  const elapsed = Math.max((performance.now() - started) / 1000, 0.1)
-  const mbps = loaded / 1048576 / elapsed
-  const remaining = mbps > 0 ? (total - loaded) / 1048576 / mbps : 0
-  const eta = remaining >= 60 ? `${Math.ceil(remaining / 60)} 分钟` : `${Math.max(1, Math.ceil(remaining))} 秒`
-  const source = sourceLabel ? ` · 源 ${sourceLabel}` : ''
-  return `分段 ${index}/${chunkCount} · ${(loaded / 1048576).toFixed(0)} / ${(total / 1048576).toFixed(0)} MB · ${mbps.toFixed(1)} MB/s · 约剩 ${eta}${source}`
-}
 
 function stableModelUrl(relativePath) {
   // 线上仍是同一个 Pages 地址；本地预览则使用本地模型，避免测试或开发时绕回线上。
@@ -356,12 +292,16 @@ function orderSources(list) {
   return [hit, ...list.filter(source => source !== hit)]
 }
 
-async function fetchManifest(model) {
+async function fetchManifest(model, { allowNetwork = true } = {}) {
   const sameOrigin = new URL(model.manifest, assetBase).href
   const mirror = mirrorUrl(model.manifest)
   const cache = await openModelCache()
-  const cached = await cache?.match(sameOrigin)
-  if (!navigator.onLine && cached) return cached.json()
+  let cached = await cache?.match(sameOrigin)
+  if (!cached && typeof caches !== 'undefined') {
+    cached = await caches.match(sameOrigin, { ignoreSearch: true }).catch(() => null)
+  }
+  if ((!allowNetwork || !navigator.onLine) && cached) return cached.json()
+  if (!allowNetwork) throw new Error('本机没有模型清单缓存')
   // 清单很小且已随离线页面缓存：始终先读同源，避免每次打开页面都等待外部 CDN。
   // 真正的模型分片仍按用户指定和测速结果选择下载源。
   const order = navigator.onLine ? [sameOrigin, mirror] : [sameOrigin]
@@ -431,6 +371,22 @@ async function hasCachedChunk(cache, cacheKey, expectedSize) {
     if (actualSize === expectedSize) return true
     await cache.delete(cacheKey)
   } catch (error) { console.warn('检查模型缓存失败', error) }
+  return false
+}
+
+/** 页面启动时只看缓存条目和响应头，不读取数十/数百 MB 的响应体。 */
+async function hasCachedChunkEntry(cache, cacheKey, expectedSize) {
+  if (!cache) return false
+  try {
+    const response = await cache.match(cacheKey)
+    if (!response) return false
+    const sizeHeader = response.headers.get('content-length')
+    if (!sizeHeader) return true
+    const declaredSize = Number(sizeHeader)
+    if (!Number.isSafeInteger(declaredSize)) return true
+    if (declaredSize === expectedSize) return true
+    await cache.delete(cacheKey)
+  } catch (error) { console.warn('检查模型缓存条目失败', error) }
   return false
 }
 
@@ -536,87 +492,63 @@ async function downloadChunk(chunk, sources, onProgress, externalSignal) {
 }
 
 async function fetchModel(model, signal) {
-  try {
-    const manifest = await fetchManifest(model)
-    if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
+  const manifest = await fetchManifest(model)
+  if (!Number.isSafeInteger(manifest.totalSize) || !Array.isArray(manifest.chunks)) throw new Error('模型清单格式错误')
 
-    const cache = await openModelCache()
-    const bytes = new Uint8Array(manifest.totalSize)
-    let loaded = 0
-    let cachedCount = 0
-    let currentSource = ''
-    let switchedSource = false
+  const cache = await openModelCache()
+  const bytes = new Uint8Array(manifest.totalSize)
+  let loaded = 0
+  let cachedCount = 0
+  let switchedSource = false
 
-    for (let index = 0; index < manifest.chunks.length; index++) {
-      // 每段开始前检查一次：被取消后不要再继续读缓存/下载别的段
-      if (signal?.aborted) throw new Error('模型已切换，下载已取消')
-      const chunk = manifest.chunks[index]
-      const relativePath = chunkRelativePath(model, chunk)
+  for (const chunk of manifest.chunks) {
+    // 每段开始前检查一次：被取消后不要再继续读缓存/下载别的段
+    if (signal?.aborted) throw new Error('模型已切换，下载已取消')
+    const relativePath = chunkRelativePath(model, chunk)
 
-      const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
-      if (cached) {
-        bytes.set(cached, loaded)
-        loaded += cached.byteLength
-        cachedCount++
-        const text = '正在读取已缓存的模型'
-        const detail = `第 ${cachedCount} 段来自本机缓存 · ${(loaded / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`
-        setDownloadBar(true, text, loaded / manifest.totalSize, detail)
-        // 状态卡不再重复显示下载信息，只在顶部下载条展示
-        continue
-      }
-
-      const sources = chunkSources(relativePath, model, loaded, manifest)
-      const started = performance.now()
-      const chunkBytes = await downloadChunk(chunk, sources, (have, size, label) => {
-        currentSource = label
-        const text = '正在下载 LaMa 模型'
-        const ratio = (loaded + have) / manifest.totalSize
-        const detail = progressDetail(loaded + have, manifest.totalSize, index + 1, manifest.chunks.length, started, label)
-        setDownloadBar(true, text, ratio, detail)
-      }, signal)
-      bytes.set(chunkBytes.bytes, loaded)
-      loaded += chunkBytes.bytes.byteLength
-      currentSource = chunkBytes.source.label
-      preferredSourceLabel = chunkBytes.source.label
-      await writeCachedChunk(cache, chunkCacheKey(relativePath), chunkBytes.bytes)
-
-      // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
-      const seconds = Math.max(0.1, (performance.now() - started) / 1000)
-      const speed = chunkBytes.bytes.byteLength / seconds
-      if (speed < SLOW_SOURCE_BYTES_PER_SECOND && !switchedSource) {
-        switchedSource = true
-        const other = sources.find(source => source.label !== chunkBytes.source.label)
-        if (other) {
-          preferredSourceLabel = other.label
-          console.info(`当前源 ${chunkBytes.source.label} 速度 ${(speed / 1024).toFixed(0)} KB/s，下一段改用 ${other.label}`)
-          const text = '当前线路较慢，正在切换下载源'
-          const detail = `已下载 ${(loaded / 1048576).toFixed(0)} MB，换源重试`
-          setDownloadBar(true, text, loaded / manifest.totalSize, detail)
-
-        }
-      }
+    const cached = await readCachedChunk(cache, chunkCacheKey(relativePath), chunk.size)
+    if (cached) {
+      bytes.set(cached, loaded)
+      loaded += cached.byteLength
+      cachedCount++
+      continue
     }
 
-    if (loaded !== manifest.totalSize) throw new Error('模型文件不完整')
+    const sources = chunkSources(relativePath, model, loaded, manifest)
+    const started = performance.now()
+    const chunkBytes = await downloadChunk(chunk, sources, () => {}, signal)
+    bytes.set(chunkBytes.bytes, loaded)
+    loaded += chunkBytes.bytes.byteLength
+    preferredSourceLabel = chunkBytes.source.label
+    await writeCachedChunk(cache, chunkCacheKey(relativePath), chunkBytes.bytes)
 
-    const expectedSha = manifest.sha256 || model.sha256
-    if (expectedSha && crypto?.subtle) {
-      const text = '正在校验模型完整性'
-      setDownloadBar(true, text, 1, '只需一次')
-
-      const digest = await crypto.subtle.digest('SHA-256', bytes)
-      const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
-      if (hex !== expectedSha) {
-        await clearModelCache(model)
-        throw new Error('模型校验未通过（下载过程中被截断），已清除缓存，请重新下载')
+    // 这一段太慢就下一段换源试试（只切一次，避免来回横跳）
+    const seconds = Math.max(0.1, (performance.now() - started) / 1000)
+    const speed = chunkBytes.bytes.byteLength / seconds
+    if (speed < SLOW_SOURCE_BYTES_PER_SECOND && !switchedSource) {
+      switchedSource = true
+      const other = sources.find(source => source.label !== chunkBytes.source.label)
+      if (other) {
+        preferredSourceLabel = other.label
+        console.info(`当前源 ${chunkBytes.source.label} 速度 ${(speed / 1024).toFixed(0)} KB/s，下一段改用 ${other.label}`)
       }
     }
-    if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
-    void refreshCacheTags()
-    return bytes
-  } finally {
-    setDownloadBar(false)
   }
+
+  if (loaded !== manifest.totalSize) throw new Error('模型文件不完整')
+
+  const expectedSha = manifest.sha256 || model.sha256
+  if (expectedSha && crypto?.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    const hex = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+    if (hex !== expectedSha) {
+      await clearModelCache(model)
+      throw new Error('模型校验未通过（下载过程中被截断），已清除缓存，请重新下载')
+    }
+  }
+  if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
+  void refreshCacheTags()
+  return bytes
 }
 
 /**
@@ -648,13 +580,13 @@ async function modelCacheStatus(model) {
   const cache = await openModelCache()
   if (!cache) return { supported: false }
   try {
-    const manifest = await fetchManifest(model)
+    const manifest = await fetchManifest(model, { allowNetwork: false })
     let have = 0
     for (const chunk of manifest.chunks) {
-      if (await hasCachedChunk(cache, chunkCacheKey(chunkRelativePath(model, chunk)), chunk.size)) have++
+      if (await hasCachedChunkEntry(cache, chunkCacheKey(chunkRelativePath(model, chunk)), chunk.size)) have++
     }
     return { supported: true, have, total: manifest.chunks.length, bytes: manifest.totalSize }
-  } catch { return { supported: false } }
+  } catch { return { supported: true, unknown: true } }
 }
 
 /** 用户点选型号时只缓存缺少的分段，不创建推理会话或拼出整个 FP32 模型。 */
@@ -670,15 +602,10 @@ async function cacheLaMaForOffline(model) {
     const key = chunkCacheKey(path)
     if (!await hasCachedChunk(cache, key, chunk.size)) {
       if (!navigator.onLine) throw new Error('当前没有网络，缺少的模型分段需联网下载')
-      const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), (have) => {
-        setDownloadBar(true, `正在缓存 ${model.label}`, (offset + have) / manifest.totalSize,
-          `第 ${index + 1}/${manifest.chunks.length} 段 · ${((offset + have) / 1048576).toFixed(0)} / ${(manifest.totalSize / 1048576).toFixed(0)} MB`)
-      })
+      const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), () => {})
       await writeCachedChunk(cache, key, bytes)
     }
     offset += chunk.size
-    setDownloadBar(true, `正在缓存 ${model.label}`, offset / manifest.totalSize,
-      `已检查 ${index + 1}/${manifest.chunks.length} 段`)
   }
   const status = await modelCacheStatus(model)
   if (!status.supported || status.have !== status.total) throw new Error('模型缓存未写完整，请检查浏览器剩余空间后重试')
@@ -687,87 +614,113 @@ async function cacheLaMaForOffline(model) {
 
 let preferredSourceLabel = null
 const SLOW_SOURCE_BYTES_PER_SECOND = 120 * 1024
+const CACHE_STATUS_TIMEOUT_MS = 2500
+
+function settleWithin(promise, timeoutMs, fallback) {
+  return new Promise(resolve => {
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(fallback), timeoutMs)
+    Promise.resolve(promise).then(finish, () => finish(fallback))
+  })
+}
+
+function modelCachePresentation(status, runtime = null) {
+  if (!status.supported) return { text: '', className: 'model-cache-tag', hidden: true }
+  if (status.unknown) return { text: '未确认', className: 'model-cache-tag partial', hidden: false }
+  if (status.total > 0 && status.have === status.total) {
+    const ready = runtime?.ready === true
+    return {
+      text: ready ? '已缓存' : '缓存不完整',
+      className: `model-cache-tag ${ready ? 'cached' : 'partial'}`,
+      hidden: false,
+    }
+  }
+  if (status.have === 0) return { text: '未缓存', className: 'model-cache-tag missing', hidden: false }
+  return { text: `${status.have}/${status.total} 段`, className: 'model-cache-tag partial', hidden: false }
+}
+
+function applyModelCachePresentation(model, presentation) {
+  const tag = elements.cacheTags[model.id]
+  if (tag) {
+    tag.hidden = presentation.hidden
+    if (!presentation.hidden) {
+      tag.textContent = presentation.text
+      tag.className = presentation.className
+    }
+  }
+  const selected = selectedModel()
+  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
+  if (selected.id !== model.id || !elements.cacheTagCurrent) return
+  elements.cacheTagCurrent.hidden = presentation.hidden
+  if (!presentation.hidden) {
+    elements.cacheTagCurrent.textContent = presentation.text
+    elements.cacheTagCurrent.className = presentation.className
+  }
+}
+
+function showModelCacheBusy(model) {
+  cacheTagRefreshGeneration++
+  applyModelCachePresentation(model, {
+    text: '缓存中', className: 'model-cache-tag partial', hidden: false,
+  })
+}
 
 /** 把每个模型的缓存状态直接标在模型名后面（不再单独占一行指标） */
 async function refreshCacheTags() {
   const generation = ++cacheTagRefreshGeneration
-  const selectedAtStart = selectedModel()
-  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selectedAtStart.label
-  const presentations = await Promise.all(Object.values(MODELS).map(async model => {
-    const status = await modelCacheStatus(model)
-    let text = ''
-    let className = 'model-cache-tag'
-    let hidden = false
-    if (!status.supported) {
-      hidden = true
-    } else if (status.have === status.total) {
-      let runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
-      if (!runtime.ready && navigator.onLine) {
-        try {
-          await cacheOfflineRuntime('lama', assetBase, APP_VERSION)
-          runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
-        } catch (error) { console.warn('LaMa 离线运行文件暂不可用', error) }
-      }
-      text = runtime.ready ? '已缓存' : '缓存不完整'
-      className = `model-cache-tag ${runtime.ready ? 'cached' : 'partial'}`
-    } else if (status.have === 0) {
-      text = '未缓存'
-      className = 'model-cache-tag missing'
-    } else {
-      text = `${status.have}/${status.total} 段`
-      className = 'model-cache-tag partial'
+  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selectedModel().label
+  await Promise.allSettled(Object.values(MODELS).map(async model => {
+    const status = await settleWithin(modelCacheStatus(model), CACHE_STATUS_TIMEOUT_MS,
+      { supported: true, unknown: true })
+    let runtime = null
+    if (!status.unknown && status.total > 0 && status.have === status.total) {
+      runtime = await settleWithin(offlineRuntimeStatus('lama', assetBase, APP_VERSION),
+        CACHE_STATUS_TIMEOUT_MS, { supported: true, ready: false })
     }
-    return { model, text, className, hidden }
+    // 每个型号查完立即更新，不再等 FP32 和 INT8 一起结束。
+    if (generation === cacheTagRefreshGeneration) {
+      applyModelCachePresentation(model, modelCachePresentation(status, runtime))
+    }
   }))
-  // 页面打开、切换模型和缓存完成都可能同时触发检查；只允许最新一轮写 UI。
-  if (generation !== cacheTagRefreshGeneration) return
-  for (const presentation of presentations) {
-    const { model, text, className, hidden } = presentation
-    const tag = elements.cacheTags[model.id]
-    if (!tag) continue
-    tag.hidden = hidden
-    if (!hidden) {
-      tag.textContent = text
-      tag.className = className
-    }
-  }
-  const selected = selectedModel()
-  const selectedPresentation = presentations.find(item => item.model.id === selected.id)
-  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
-  if (elements.cacheTagCurrent && selectedPresentation) {
-    elements.cacheTagCurrent.hidden = selectedPresentation.hidden
-    if (!selectedPresentation.hidden) {
-      elements.cacheTagCurrent.textContent = selectedPresentation.text
-      elements.cacheTagCurrent.className = selectedPresentation.className
-    }
-  }
 }
 
 async function refreshOcrCacheTag() {
   const generation = ++ocrCacheRefreshGeneration
-  const status = await ocrModelCacheStatus(assetBase)
-  let runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
-  if (status.supported && status.have === status.total && !runtime.ready && navigator.onLine) {
-    try {
-      await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
-      runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
-    } catch (error) { console.warn('OCR 离线运行文件暂不可用', error) }
-  }
+  const status = await settleWithin(ocrModelCacheStatus(assetBase), CACHE_STATUS_TIMEOUT_MS,
+    { supported: true, unknown: true, have: 0, total: 2 })
+  const runtime = !status.unknown && status.total > 0 && status.have === status.total
+    ? await settleWithin(offlineRuntimeStatus('ocr', assetBase, APP_VERSION),
+      CACHE_STATUS_TIMEOUT_MS, { supported: true, ready: false })
+    : { supported: true, ready: false }
   if (generation !== ocrCacheRefreshGeneration) return
   const tag = elements.cacheTagOcr
   ocrCacheSupported = status.supported
-  ocrCached = status.supported && status.have === status.total && runtime.ready
+  ocrCached = status.supported && !status.unknown && status.have === status.total && runtime.ready
   tag.hidden = !status.supported
   if (status.supported) {
-    tag.textContent = ocrCached ? '已缓存' : status.have === status.total ? '缓存不完整'
+    tag.textContent = status.unknown ? '未确认' : ocrCached ? '已缓存' : status.have === status.total ? '缓存不完整'
       : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
-    tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.have ? 'partial' : 'missing'}`
+    tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.unknown || status.have ? 'partial' : 'missing'}`
   }
   elements.cacheOcr.classList.toggle('cached', ocrCached)
   elements.ocrModelHint.textContent = ocrCached
     ? '文字识别按需自动使用。'
     : '点选后提前缓存；识别时仍会自动使用。'
   syncCacheControls()
+}
+
+function showOcrCacheBusy() {
+  ocrCacheRefreshGeneration++
+  elements.cacheTagOcr.hidden = false
+  elements.cacheTagOcr.textContent = '缓存中'
+  elements.cacheTagOcr.className = 'model-cache-tag partial'
+  elements.cacheOcr.classList.remove('cached')
 }
 
 async function releaseActiveSession() {
@@ -1558,13 +1511,14 @@ async function addFiles(files, { restored = false, ids = [], warmup = true } = {
   updatePreviewVisibility()
 }
 
-/** 预热当前选中的模型：未缓存就开始下载（进度在顶部下载条），已缓存则直接建会话 */
+/** 预热当前选中的模型；若用户正在主动缓存，先复用并等待那次下载。 */
 let warmUpStartedFor = null
 function warmUpModel() {
   const model = selectedModel()
   if (state.running || warmUpStartedFor === model.id) return
   warmUpStartedFor = model.id
-  const task = getSession(model)
+  const pendingCache = manualModelCachePromise || ocrCachePromise
+  const task = pendingCache ? pendingCache.then(() => getSession(model)) : getSession(model)
   syncCacheControls()
   task
     .then(() => {
@@ -1618,48 +1572,57 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
     return
   }
   manualModelCachingId = model.id
+  showModelCacheBusy(model)
   syncCacheControls()
-  void (async () => {
+  const task = (async () => {
     try {
-      const status = await modelCacheStatus(model)
-      const runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
-      if (status.supported && status.have === status.total && runtime.ready) {
+      const status = await settleWithin(modelCacheStatus(model), CACHE_STATUS_TIMEOUT_MS,
+        { supported: true, unknown: true })
+      const runtime = !status.unknown && status.total > 0 && status.have === status.total
+        ? await settleWithin(offlineRuntimeStatus('lama', assetBase, APP_VERSION),
+          CACHE_STATUS_TIMEOUT_MS, { supported: true, ready: false })
+        : { supported: true, ready: false }
+      if (!status.unknown && status.total > 0 && status.have === status.total && runtime.ready) {
         setStatus(`${model.label} 已缓存`, 1, '无需重复下载')
         return
       }
-      setDownloadBar(true, `正在准备 ${model.label}`, null, '只缓存缺少的文件')
       await cacheLaMaForOffline(model)
       setStatus(`${model.label} 已缓存到本机`, 1, '断网后可直接使用')
     } catch (error) {
       setStatus(`${model.label} 缓存失败`, 0, error.message)
     } finally {
-      setDownloadBar(false)
       manualModelCachingId = null
       syncCacheControls()
       void refreshCacheTags()
     }
   })()
+  manualModelCachePromise = task
+  void task.finally(() => {
+    if (manualModelCachePromise === task) manualModelCachePromise = null
+  })
 }))
 
-elements.cacheOcr.addEventListener('click', async () => {
+elements.cacheOcr.addEventListener('click', () => {
   if (ocrCaching || ocrCached || state.running || manualModelCachingId || sessionPromise) return
   ocrCaching = true
+  showOcrCacheBusy()
   syncCacheControls()
-  setDownloadBar(true, '正在缓存 PP-OCRv6-small', 0, '正在准备文字识别模型')
-  try {
-    await cacheOcrModels(assetBase, (done, total) => {
-      setDownloadBar(true, '正在缓存 PP-OCRv6-small', done / total, `已缓存 ${done}/${total} 个模型文件`)
-    })
-    setDownloadBar(true, '正在准备离线运行文件', null, '首次使用只需一次')
-    await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
-    setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
-  } catch (error) {
-    setStatus('OCR 模型缓存失败', 0, error.message)
-  } finally {
-    setDownloadBar(false)
-    ocrCaching = false
-    await refreshOcrCacheTag()
-  }
+  const task = (async () => {
+    try {
+      await cacheOcrModels(assetBase)
+      await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
+      setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
+    } catch (error) {
+      setStatus('OCR 模型缓存失败', 0, error.message)
+    } finally {
+      ocrCaching = false
+      await refreshOcrCacheTag()
+    }
+  })()
+  ocrCachePromise = task
+  void task.finally(() => {
+    if (ocrCachePromise === task) ocrCachePromise = null
+  })
 })
 
 elements.runBatch.addEventListener('click', () => {

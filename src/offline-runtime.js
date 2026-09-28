@@ -22,7 +22,15 @@ async function runtimeManifest(assetBase, build) {
 export async function offlineRuntimeStatus(kind, assetBase, build) {
   if (!('caches' in globalThis)) return { supported: false, ready: false }
   try {
-    const manifest = await runtimeManifest(assetBase, build)
+    // 状态检查必须是纯本地读取。页面打开时若在这里 fetch，旧版本升级后会
+    // 一边显示“检查中”一边偷偷补下载 WASM/Worker，慢网下会卡住数分钟。
+    const manifestUrl = new URL('offline-runtime.json', assetBase).href
+    const manifestResponse = await caches.match(manifestUrl, { ignoreSearch: true })
+    if (!manifestResponse?.ok) return { supported: true, ready: false, have: 0, total: 0 }
+    const manifest = await manifestResponse.json()
+    if (manifest.build !== build || !Array.isArray(manifest.lama) || !Array.isArray(manifest.ocr)) {
+      return { supported: true, ready: false, have: 0, total: 0 }
+    }
     const files = manifest[kind]
     if (!Array.isArray(files)) throw new Error('离线资源类型错误')
     const cache = await caches.open(shellCacheName(build))
@@ -37,7 +45,7 @@ export async function offlineRuntimeStatus(kind, assetBase, build) {
     return { supported: true, have: found.filter(response => response?.ok).length, total: files.length,
       ready: found.every(response => response?.ok) && shellFound.every(response => response?.ok) }
   } catch {
-    return { supported: false, ready: false }
+    return { supported: true, ready: false, have: 0, total: 0 }
   }
 }
 

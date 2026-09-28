@@ -13,6 +13,14 @@
 - `public/offline-service-worker.js` 缓存应用资源；LaMa 和 OCR 模型可提前缓存。`scripts/browser-offline-check.mjs` 在 Chrome 中检查缓存后断网重载与本地推理。桌面 Playwright WebKit 曾完成离线 LaMa 流程；这些检查不能代替真实 iPhone 飞行模式测试。
 - [v2.2.3 GitHub Actions run 36409593121](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36409593121) 已成功：提交 `fb07d932365ce0ae6045a858d280ad08f1a1f2b8`，`npm test`、手机横竖屏模型界面、OCR 缓存后断网重载和 Pages 部署全部通过。后续文档提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
 
+### v2.2.5 缓存检查与界面回归
+
+- 删除 v2.2.4 新增的固定下载浮窗。用户主动缓存时只在对应模型原有徽标中显示“缓存中”，选图控件始终可用；页面不再出现遮挡模型列表和处理按钮的浮层。
+- 页面启动的 LaMa、OCR 与离线运行文件状态检查全部改为只读 Cache Storage，禁止联网和自动补下载。LaMa 状态只检查缓存条目与 `Content-Length`，不读取 62MB/198MB 响应体；两个 LaMa 型号分别完成后立即更新，不再互相等待。
+- 单项缓存检查最多等待 2.5 秒。自动化让 Cache Storage 的模型查询永久悬空后，页面仍立即可选图，随后三个徽标统一降级为“未确认”，没有“检查中”长时间占位。
+- 精确构造“模型分段齐全、当前构建运行文件全部缺失”的升级场景后刷新：v2.2.5 正式构建在 Chrome 59–60ms、Playwright WebKit 85ms 内显示“缓存不完整”，模型和运行文件网络请求均为 0，下载浮窗节点为 0；只有用户点选对应模型后才补齐文件。
+- Chrome 与 WebKit 分别实际缓存 PP-OCRv6-small 和 LaMa INT8，缓存期间模型区、处理按钮、预览区和滚动位置最大位移均为 **0px**；缓存期间文件选择控件保持启用，重复点选已缓存模型没有新增下载请求，补齐后断网重载仍显示“已缓存”。
+
 ### v2.2.4 首次打开与缓存稳定性回归
 
 - 下载提示改为固定在视口底部的浮层，并将高频下载回调限制为最多每 120ms 更新一次；模型说明保留固定行高，常见缓存状态保留统一宽度。实际缓存时，浮层出现和消失不再参与正文排版。

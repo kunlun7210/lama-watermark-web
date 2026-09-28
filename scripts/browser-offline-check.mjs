@@ -22,7 +22,6 @@ async function beginLayoutSampling(page) {
         runTop: run?.top,
         previewTop: preview?.top,
         scrollY,
-        downloadVisible: !document.querySelector('#download-bar')?.hidden,
       })
     }
     sample()
@@ -43,7 +42,6 @@ async function endLayoutSampling(page, label) {
     spreads[key] = spread
     assert.ok(spread <= 1, `${label} ${key} 跳动 ${spread}px`)
   }
-  assert.ok(samples.some(sample => sample.downloadVisible), `${label} 未观察到下载提示`)
   console.log(`${label}：${samples.length} 帧，最大正文位移 ${Math.max(...Object.values(spreads))}px`)
 }
 
@@ -57,8 +55,10 @@ try {
   })
   const page = await context.newPage()
   const errors = []
+  const networkUrls = []
   let mainFrameNavigations = 0
   page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => networkUrls.push(request.url()))
   page.on('framenavigated', frame => { if (frame === page.mainFrame()) mainFrameNavigations++ })
   await page.goto(`${base}/?source=origin`, { waitUntil: 'load' })
   await page.waitForFunction(() => crossOriginIsolated
@@ -88,14 +88,19 @@ try {
     `三个模型圆点样式不一致：${JSON.stringify(circleStyles)}`)
   assert.equal(await page.locator('.status-card').count(), 0)
   assert.equal(await page.locator('.status-announcer').count(), 1)
+  assert.equal(await page.locator('#download-bar').count(), 0, '页面不应存在下载浮窗')
+  await page.waitForFunction(() => ['未缓存', '未确认'].includes(
+    document.querySelector('#cache-tag-int8')?.textContent || ''), null, { timeout: 5000 })
+  assert.equal(await page.locator('#file-input').isDisabled(), false)
 
   await beginLayoutSampling(page)
   await page.locator('#cache-ocr').click()
   await page.waitForFunction(() => [...document.querySelectorAll('input[name="model"]')]
     .every(input => input.disabled))
+  assert.equal(await page.locator('#file-input').isDisabled(), false, '缓存 OCR 时仍应可以选择图片')
+  assert.equal(await page.locator('#download-bar').count(), 0)
   await page.waitForFunction(() => document.querySelector('#cache-tag-ocr')?.textContent === '已缓存',
     null, { timeout: 60000 })
-  await page.waitForFunction(() => document.querySelector('#download-bar')?.hidden === true)
   await endLayoutSampling(page, 'OCR 首次缓存')
   assert.equal(await page.locator('input[name="model"]:disabled').count(), 0)
   assert.equal(await page.locator('#cache-ocr').isDisabled(), true)
@@ -130,16 +135,58 @@ try {
   await page.locator('input[name="model"][value="int8"]').click()
   await page.waitForFunction(() => [...document.querySelectorAll('input[name="model"]')]
     .every(input => input.disabled) && document.querySelector('#cache-ocr')?.disabled)
+  assert.equal(await page.locator('#file-input').isDisabled(), false, '缓存 LaMa 时仍应可以选择图片')
   await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '已缓存'
-    && document.querySelector('#download-bar')?.hidden === true,
+    && !document.querySelector('input[name="model"][value="int8"]')?.disabled,
   null, { timeout: 120000 })
   await endLayoutSampling(page, 'LaMa 首次缓存')
   assert.equal(await page.locator('input[name="model"]:disabled').count(), 0)
-  assert.equal(await page.locator('#download-bar').evaluate(node => getComputedStyle(node).position), 'fixed')
+  assert.equal(await page.locator('#download-bar').count(), 0)
+  const requestsBeforeCachedClick = networkUrls.length
   await page.locator('input[name="model"][value="int8"]').click()
   await page.waitForTimeout(300)
-  assert.equal(await page.locator('#download-bar').isHidden(), true, '已缓存模型被重复下载')
+  const repeatedDownloads = networkUrls.slice(requestsBeforeCachedClick)
+    .filter(url => /\/models\/.*\.bin$|\/ocr\/.*\.tar$|\/ort\/.*\.(?:wasm|mjs)$|\/worker-entry-.*\.js$/.test(new URL(url).pathname))
+  assert.deepEqual(repeatedDownloads, [], '已缓存模型被重复下载')
   assert.match(await page.locator('#status').textContent(), /已缓存/)
+
+  // 精确复现真机问题：模型分段仍在，但当前构建的运行文件缺失。
+  // 刷新后只能读缓存并标记“不完整”，不能在“检查中”偷偷联网补下载。
+  const missingRuntime = await page.evaluate(async () => {
+    const manifestUrl = new URL('offline-runtime.json', document.baseURI).href
+    const response = await caches.match(manifestUrl, { ignoreSearch: true })
+    const manifest = await response.json()
+    const cache = await caches.open(`lama-shell-${manifest.build}`)
+    const urls = [...manifest.lama, ...manifest.ocr].map(file => new URL(file, document.baseURI).href)
+    await Promise.all(urls.map(url => cache.delete(url)))
+    return urls
+  })
+  const requestsBeforeIncompleteReload = networkUrls.length
+  const reloadStarted = Date.now()
+  await page.reload({ waitUntil: 'load' })
+  await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '缓存不完整'
+    && document.querySelector('#cache-tag-ocr')?.textContent === '缓存不完整',
+  null, { timeout: 7000 })
+  const incompleteCheckMs = Date.now() - reloadStarted
+  assert.ok(incompleteCheckMs < 7000, `缓存状态检查耗时过长：${incompleteCheckMs}ms`)
+  const unexpectedDownloads = networkUrls.slice(requestsBeforeIncompleteReload)
+    .filter(url => missingRuntime.includes(url)
+      || /\/models\/.*\.bin$|\/ocr\/.*\.tar$/.test(new URL(url).pathname))
+  assert.deepEqual(unexpectedDownloads, [], `页面打开时发生了自动下载：${unexpectedDownloads.join(', ')}`)
+  assert.equal(await page.locator('#download-bar').count(), 0)
+  assert.equal(await page.locator('#file-input').isDisabled(), false)
+  assert.equal(await page.locator('input[name="model"][value="int8"]').isDisabled(), false)
+  assert.equal(await page.locator('#cache-ocr').isDisabled(), false)
+  console.log(`运行文件缺失启动检查：${incompleteCheckMs}ms，无自动下载、无浮窗`)
+
+  // 只有用户主动点选时才补齐相应运行文件。
+  await page.locator('.model-more summary').click()
+  await page.locator('#cache-ocr').click()
+  await page.waitForFunction(() => document.querySelector('#cache-tag-ocr')?.textContent === '已缓存',
+    null, { timeout: 60000 })
+  await page.locator('input[name="model"][value="int8"]').click()
+  await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '已缓存',
+    null, { timeout: 120000 })
 
   // Playwright WebKit 在 macOS 上对“setOffline 后直接 reload + Service Worker”会抛内部错误；
   // WebKit 先在线重开验证持久缓存，再断网读取同一套 SW 资源。Chromium 保留完整断网导航。
@@ -182,6 +229,37 @@ try {
   assert.deepEqual(errors, [])
   console.log('offline shell, platform templates, model manifests, and model option UI verified', offline.version)
   await context.close()
+
+  // 即使 Safari 的 Cache Storage 自身异常变慢，也不能让页面停在“检查中”或禁用选图。
+  const slowContext = await browser.newContext({
+    viewport: { width: 402, height: 874 },
+    screen: { width: 402, height: 874 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1',
+  })
+  await slowContext.addInitScript(() => {
+    const originalMatch = Cache.prototype.match
+    Cache.prototype.match = function (request, options) {
+      const url = typeof request === 'string' ? request : request?.url || ''
+      if (/\/models\/(?:int8|fp32)\/manifest\.json$|\/ocr\/.*\.tar$/.test(new URL(url, location.href).pathname)) {
+        return new Promise(() => {})
+      }
+      return originalMatch.call(this, request, options)
+    }
+  })
+  const slowPage = await slowContext.newPage()
+  await slowPage.goto(`${base}/?source=origin`, { waitUntil: 'load' })
+  await slowPage.waitForFunction(() => /^v\d+\.\d+\.\d+/.test(
+    document.querySelector('#app-version')?.textContent || ''), null, { timeout: 60000 })
+  assert.equal(await slowPage.locator('#file-input').isDisabled(), false)
+  assert.equal(await slowPage.locator('#download-bar').count(), 0)
+  await slowPage.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '未确认'
+    && document.querySelector('#cache-tag-fp32')?.textContent === '未确认'
+    && document.querySelector('#cache-tag-ocr')?.textContent === '未确认',
+  null, { timeout: 5000 })
+  console.log('Cache Storage 超时降级：页面可操作，2.5 秒后显示“未确认”')
+  await slowContext.close()
 } finally {
   await browser.close()
 }
