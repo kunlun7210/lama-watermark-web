@@ -52,6 +52,8 @@ jobs:
             node scripts/browser-stale-entry-check.mjs
           TEST_URL_PREFIX=http://127.0.0.1:4173 \
             node scripts/browser-estimate-check.mjs
+          TEST_URL_PREFIX=http://127.0.0.1:4173 \
+            CHROME_PATH="$(command -v google-chrome)" node scripts/browser-offline-check.mjs
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

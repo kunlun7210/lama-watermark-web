@@ -7,6 +7,7 @@ import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
 import { buildZip } from './zip.js'
 import { InferenceController } from './inference-controller.js'
 import { cacheOcrModels, ocrModelCacheStatus } from './ocr-model-cache.js'
+import { cacheOfflineRuntime, offlineRuntimeStatus } from './offline-runtime.js'
 import {
   StorageCapacityError,
   batchLimitReason,
@@ -54,7 +55,7 @@ const MODELS = {
   },
   fp32: {
     id: 'fp32',
-    label: 'FP32 模型 · 198MB',
+    label: 'FP32 · 198MB',
     manifest: 'models/fp32/manifest.json',
     inputLayout: 'image-mask',
     sha256: '1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6',
@@ -86,6 +87,7 @@ const elements = {
   cacheTagCurrent: document.querySelector('#cache-tag-current'),
   cacheTagOcr: document.querySelector('#cache-tag-ocr'),
   cacheOcr: document.querySelector('#cache-ocr'),
+  ocrModelHint: document.querySelector('#ocr-model-hint'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
   downloadStatus: document.querySelector('#download-status'),
@@ -305,21 +307,32 @@ function orderSources(list) {
 async function fetchManifest(model) {
   const sameOrigin = new URL(model.manifest, assetBase).href
   const mirror = mirrorUrl(model.manifest)
+  const cache = await openModelCache()
+  const cached = await cache?.match(sameOrigin)
+  if (!navigator.onLine && cached) return cached.json()
   const preferred = preferredDownloadSource()
-  const order = preferred === 'origin' ? [sameOrigin, mirror] : [mirror, sameOrigin]
+  const order = !navigator.onLine ? [sameOrigin]
+    : preferred === 'origin' ? [sameOrigin, mirror] : [mirror, sameOrigin]
   let lastError = null
   for (const url of order) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < (navigator.onLine ? 2 : 1); attempt++) {
       try {
         const response = await fetch(url, { cache: 'no-cache' })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return await response.json()
+        const manifest = await response.json()
+        if (cache) {
+          await cache.put(sameOrigin, new Response(JSON.stringify(manifest), {
+            headers: { 'Content-Type': 'application/json' },
+          })).catch(() => {})
+        }
+        return manifest
       } catch (error) {
         lastError = error
         await new Promise(resolve => setTimeout(resolve, 600))
       }
     }
   }
+  if (cached) return cached.json()
   throw new Error(`模型清单读取失败：${lastError?.message || '网络错误'}`)
 }
 
@@ -593,8 +606,15 @@ async function refreshCacheTags() {
       tag.hidden = true
     } else if (status.have === status.total) {
       tag.hidden = false
-      text = '已缓存'
-      className = 'model-cache-tag cached'
+      let runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
+      if (!runtime.ready && navigator.onLine) {
+        try {
+          await cacheOfflineRuntime('lama', assetBase, APP_VERSION)
+          runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
+        } catch (error) { console.warn('LaMa 离线运行文件暂不可用', error) }
+      }
+      text = runtime.ready ? '已缓存' : '模型已缓存'
+      className = `model-cache-tag ${runtime.ready ? 'cached' : 'partial'}`
     } else if (status.have === 0) {
       tag.hidden = false
       text = '未缓存'
@@ -621,16 +641,21 @@ async function refreshCacheTags() {
 
 async function refreshOcrCacheTag() {
   const status = await ocrModelCacheStatus(assetBase)
+  const runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
   const tag = elements.cacheTagOcr
   ocrCacheSupported = status.supported
-  ocrCached = status.supported && status.have === status.total
+  ocrCached = status.supported && status.have === status.total && runtime.ready
   tag.hidden = !status.supported
   if (status.supported) {
-    tag.textContent = ocrCached ? '已缓存' : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
+    tag.textContent = ocrCached ? '已缓存' : status.have === status.total ? '模型已缓存'
+      : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
     tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.have ? 'partial' : 'missing'}`
   }
   elements.cacheOcr.disabled = !status.supported || ocrCached || ocrCaching || state.running
-  elements.cacheOcr.textContent = ocrCached ? 'OCR 模型已缓存' : '提前缓存 OCR 模型'
+  elements.cacheOcr.classList.toggle('cached', ocrCached)
+  elements.ocrModelHint.textContent = ocrCached
+    ? '文字识别按需自动使用；模型和运行文件已缓存。'
+    : '点选后提前缓存；识别时仍会自动使用。'
 }
 
 async function releaseActiveSession() {
@@ -1470,11 +1495,13 @@ elements.cacheOcr.addEventListener('click', async () => {
   if (ocrCaching || ocrCached || state.running) return
   ocrCaching = true
   elements.cacheOcr.disabled = true
-  elements.cacheOcr.textContent = '正在缓存 OCR 模型…'
+  elements.ocrModelHint.textContent = '正在缓存文字识别模型…'
   try {
     await cacheOcrModels(assetBase, (done, total) => {
-      elements.cacheOcr.textContent = `正在缓存 OCR 模型 · ${done}/${total}`
+      elements.ocrModelHint.textContent = `正在缓存 · ${done}/${total} 个文件`
     })
+    elements.ocrModelHint.textContent = '正在缓存离线运行文件…'
+    await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
     setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
   } catch (error) {
     setStatus('OCR 模型缓存失败', 0, error.message)

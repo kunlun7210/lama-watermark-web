@@ -56,6 +56,8 @@ const resources = [
   ['assets/index-DiAJy31j.js', `${live}/assets/index-DiAJy31j.js`],
   ['assets/index-BlVSS6-9.css', `${live}/assets/index-BlVSS6-9.css`],
   ['coi-serviceworker.min.js', `${live}/coi-serviceworker.min.js`],
+  ['offline-service-worker.js', `${live}/offline-service-worker.js`],
+  ['offline-runtime.json', `${live}/offline-runtime.json`],
   ['version.json', `${live}/version.json`],
 ]
 const liveBytes = new Map()
@@ -71,7 +73,7 @@ const liveHtml = liveBytes.get('index.html').toString('utf8')
 check('线上首页引用固定入口 assets/app.js（不再带内容哈希）',
   /assets\/app\.js\?v=\d{14}/.test(liveHtml) && !/assets\/index-[A-Za-z0-9_-]+\.js/.test(liveHtml))
 
-for (const name of ['index.html', 'assets/app.js', 'assets/app.css', 'assets/index-DiAJy31j.js', 'coi-serviceworker.min.js']) {
+for (const name of ['index.html', 'assets/app.js', 'assets/app.css', 'assets/index-DiAJy31j.js', 'coi-serviceworker.min.js', 'offline-service-worker.js', 'offline-runtime.json']) {
   const localName = name === 'index.html' ? 'index.html' : name
   let local
   try { local = await readFile(join(distDir, localName)) } catch {

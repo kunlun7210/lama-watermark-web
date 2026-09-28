@@ -22,7 +22,7 @@
         quiet: true,
       }
     </script>
-    <script vite-ignore src="./coi-serviceworker.min.js"></script>
+    <script vite-ignore src="./offline-service-worker.js"></script>
   </head>
   <body>
     <main class="shell">
@@ -54,7 +54,7 @@
           <span class="model-summary-label">本地 AI 模型</span>
           <span class="model-summary-value"><strong id="current-model-label">INT8 · 62MB</strong><em id="cache-tag-current" class="model-cache-tag">检查中</em></span>
         </div>
-        <p class="model-summary-hint">首次使用需要下载，之后自动缓存，无需重下。</p>
+        <p class="model-summary-hint">首次使用需在线下载；显示“已缓存”后可离线处理。</p>
         <details class="model-more">
           <summary>模型信息</summary>
           <div class="model-picker">
@@ -68,15 +68,17 @@
             <label class="model-option">
               <input type="radio" name="model" value="fp32" />
               <span>
-                <span class="model-line"><strong>FP32 模型 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
+                <span class="model-line"><strong>FP32 · 198MB</strong><em id="cache-tag-fp32" class="model-cache-tag">检查中</em></span>
                 <small>画质基准，手机端不推荐，无明显视觉提升。</small>
               </span>
             </label>
-          </div>
-          <div class="ocr-model-option">
-            <div class="model-line"><strong>PP‑OCRv6‑small · 约 30MB</strong><em id="cache-tag-ocr" class="model-cache-tag">检查中</em></div>
-            <small>水印文字识别按需自动使用；可提前下载到本机，避免处理时等待。</small>
-            <button id="cache-ocr" class="secondary" type="button">提前缓存 OCR 模型</button>
+            <button id="cache-ocr" class="model-option ocr-model-option" type="button" aria-label="提前缓存 PP-OCRv6-small 文字识别模型">
+              <span class="model-choice-circle" aria-hidden="true"></span>
+              <span>
+                <span class="model-line"><strong>PP‑OCRv6‑small · 约 30MB</strong><em id="cache-tag-ocr" class="model-cache-tag">检查中</em></span>
+                <small id="ocr-model-hint">点选后提前缓存；识别时仍会自动使用。</small>
+              </span>
+            </button>
           </div>
         </details>
         <p id="selected-name" class="selected-name" hidden></p>

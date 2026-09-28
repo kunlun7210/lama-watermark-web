@@ -7,6 +7,14 @@ const version = JSON.parse(await readFile(new URL('../dist/version.json', import
 assert.match(version, /^\d{14}$/)
 assert.match(html, new RegExp(`\\./assets/app\\.js\\?v=${version}`))
 assert.match(html, new RegExp(`\\./assets/app\\.css\\?v=${version}`))
+assert.match(html, /\.\/offline-service-worker\.js/)
+const offlineWorker = await readFile(new URL('../dist/offline-service-worker.js', import.meta.url), 'utf8')
+assert.match(offlineWorker, new RegExp(`const OFFLINE_BUILD = '${version}'`))
+const offlineRuntime = JSON.parse(await readFile(new URL('../dist/offline-runtime.json', import.meta.url), 'utf8'))
+assert.equal(offlineRuntime.build, version)
+for (const file of [...offlineRuntime.lama, ...offlineRuntime.ocr]) {
+  await access(new URL(`../dist/${file}`, import.meta.url))
+}
 assert.doesNotMatch(html, /assets\/index-[A-Za-z0-9_-]+\.(?:js|css)/)
 await access(new URL('../dist/assets/app.js', import.meta.url))
 await access(new URL('../dist/assets/app.css', import.meta.url))

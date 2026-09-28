@@ -65,11 +65,11 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .model-more .model-picker { margin-top: 9px; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
-.ocr-model-option { display: grid; gap: 8px; margin-top: 10px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
-.ocr-model-option .model-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ocr-model-option .model-line strong { font-size: 14.5px; }
-.ocr-model-option small { color: #99a6bb; line-height: 1.4; }
-.ocr-model-option button { min-height: 40px; font-size: 13px; }
+.model-picker > .ocr-model-option { width: 100%; min-height: 0; color: inherit; font-weight: normal; text-align: left; justify-content: flex-start; cursor: pointer; }
+.ocr-model-option:disabled { opacity: 1; cursor: default; }
+.ocr-model-option .model-choice-circle { flex: 0 0 20px; width: 20px; height: 20px; border: 2px solid #8f9bb0; border-radius: 50%; background: #060a10; }
+.ocr-model-option.cached { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
+.ocr-model-option.cached .model-choice-circle { border-color: #70e0b6; background: #081420; box-shadow: inset 0 0 0 4px #70e0b6; }
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
 .model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
 .model-option > span { display: grid; gap: 4px; }

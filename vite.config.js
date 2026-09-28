@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-import { writeFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 // 构建版本：每次 build 变化。写入 dist/version.json 并注入 JS，
@@ -26,6 +26,26 @@ function versionPlugin() {
     closeBundle() {
       mkdirSync(outDir, { recursive: true })
       writeFileSync(join(outDir, 'version.json'), JSON.stringify({ version: APP_VERSION }))
+      const workerEntry = readdirSync(join(outDir, 'assets')).find(name => /^worker-entry-.*\.js$/.test(name))
+      if (!workerEntry) throw new Error('LaMa Worker 构建文件缺失')
+      writeFileSync(join(outDir, 'offline-runtime.json'), JSON.stringify({
+        build: APP_VERSION,
+        lama: [
+          `assets/${workerEntry}`,
+          'ort/ort-wasm-simd-threaded.mjs',
+          'ort/ort-wasm-simd-threaded.wasm',
+        ],
+        ocr: [
+          'assets/ocr-fallback.js',
+          'assets/dist.js',
+          'assets/ort.min.js',
+          'ort/ort-wasm-simd-threaded.jsep.mjs',
+          'ort/ort-wasm-simd-threaded.jsep.wasm',
+        ],
+      }))
+      const workerPath = join(outDir, 'offline-service-worker.js')
+      const worker = readFileSync(workerPath, 'utf8')
+      writeFileSync(workerPath, worker.replaceAll('__OFFLINE_BUILD__', APP_VERSION))
     },
   }
 }
