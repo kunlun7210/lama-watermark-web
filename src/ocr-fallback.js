@@ -1,8 +1,10 @@
 // Only loaded after the existing, calibrated platform detectors find nothing.
 // The OCR worker is disposed before LaMa starts to keep peak iPhone memory down.
+import { claheCanvas } from './clahe.js'
+
 const MODEL_FILES = {
-  textDetectionModelName: 'PP-OCRv5_mobile_det',
-  textRecognitionModelName: 'PP-OCRv5_mobile_rec',
+  textDetectionModelName: 'PP-OCRv6_small_det',
+  textRecognitionModelName: 'PP-OCRv6_small_rec',
 }
 const PLATFORM_NAMES = ['豆包', '即梦', '千问', '清言', '元宝', '文心', 'GEMINI']
 
@@ -120,19 +122,23 @@ export async function detectOcrFallback(source, assetBase, ortBase) {
   const { PaddleOCR } = await import('@paddleocr/paddleocr-js')
   const ocr = await PaddleOCR.create({
     lang: 'ch',
-    ocrVersion: 'PP-OCRv5',
+    ocrVersion: 'PP-OCRv6',
     worker: true,
     ...MODEL_FILES,
-    textDetectionModelAsset: { url: new URL('ocr/PP-OCRv5_mobile_det_onnx_infer.tar', assetBase).href },
-    textRecognitionModelAsset: { url: new URL('ocr/PP-OCRv5_mobile_rec_onnx_infer.tar', assetBase).href },
+    textDetectionModelAsset: { url: new URL('ocr/PP-OCRv6_small_det_onnx_infer.tar', assetBase).href },
+    textRecognitionModelAsset: { url: new URL('ocr/PP-OCRv6_small_rec_onnx_infer.tar', assetBase).href },
     ortOptions: { backend: 'wasm', wasmPaths: ortBase, numThreads: 1, simd: true },
   })
   try {
-    for (const [right, bottom] of [[true, true], [false, true], [true, false], [false, false]]) {
-      const crop = cornerCrop(source, right, bottom)
-      const [result] = await ocr.predict(crop.canvas)
-      const regions = ocrItemsToRegions(result.items, crop.x, crop.y, source.width, source.height)
-      if (regions.length) return regions
+    const corners = [[true, true], [false, true], [true, false], [false, false]]
+    // Prefer unmodified pixels. CLAHE is a second pass for faint corner text.
+    for (const enhance of [false, true]) {
+      for (const [right, bottom] of corners) {
+        const crop = cornerCrop(source, right, bottom)
+        const [result] = await ocr.predict(enhance ? claheCanvas(crop.canvas) : crop.canvas)
+        const regions = ocrItemsToRegions(result.items, crop.x, crop.y, source.width, source.height)
+        if (regions.length) return regions
+      }
     }
     return []
   } finally {

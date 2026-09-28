@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { normalizedWatermarkText, watermarkKind, ocrItemsToRegions } from '../src/ocr-fallback.js'
+import { claheGrayRgba } from '../src/clahe.js'
 
 const item = (text, x, y, width, height, score = 0.98) => ({
   text, score,
@@ -48,4 +49,21 @@ assert.deepEqual(ocrItemsToRegions([
   item('小红书号：123456', 20, 120, 200, 20, 0.2),
 ], 0, 0, 1000, 1000), [])
 
-console.log('OCR 文字匹配、分行与区域校验通过')
+const width = 128
+const height = 128
+const faint = new Uint8ClampedArray(width * height * 4)
+for (let y = 0; y < height; y++) {
+  for (let x = 0; x < width; x++) {
+    const at = (y * width + x) * 4
+    const level = 100 + Math.floor(x / 8) + (y >= 50 && y < 62 && x >= 30 && x < 100 ? 5 : 0)
+    faint[at] = faint[at + 1] = faint[at + 2] = level
+    faint[at + 3] = 255
+  }
+}
+const enhanced = claheGrayRgba(faint, width, height)
+const pixel = (buffer, x, y) => buffer[(y * width + x) * 4]
+assert.ok(pixel(enhanced, 40, 55) - pixel(enhanced, 40, 45) > 5, 'CLAHE 应增强淡字的局部对比度')
+assert.equal(pixel(faint, 40, 55) - pixel(faint, 40, 45), 5, '不能改写原图输入')
+assert.equal(enhanced[(55 * width + 40) * 4 + 3], 255)
+
+console.log('OCR 文字匹配、分行、区域与 CLAHE 校验通过')

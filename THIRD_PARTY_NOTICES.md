@@ -6,7 +6,7 @@ This repository redistributes or uses the following components:
 - LaMa 512 INT8 ONNX model from `g-ronimo/lama`, Apache License 2.0.
 - ONNX Runtime Web 1.26.0, MIT License.
 - `coi-serviceworker` 0.1.7 by Guido Zuidhof, MIT License.
-- PaddleOCR.js 0.4.2 and PP-OCRv5 mobile detection/recognition model archives, Apache License 2.0. The two model archives are stored under `public/ocr/` and loaded locally in the browser only when OCR fallback is needed.
+- PaddleOCR.js 0.4.2 and PP-OCRv6-small detection/recognition model archives, Apache License 2.0. The two model archives are stored under `public/ocr/` and loaded locally in the browser only when OCR fallback is needed.
 - OpenCV.js from `@techstark/opencv-js`, Apache License 2.0; `clipper-lib`, Boost Software License; `js-yaml`, MIT License. These are dependencies of PaddleOCR.js.
 
 The watermark detection rules and the bitmap templates in `src/maskData.js`,
