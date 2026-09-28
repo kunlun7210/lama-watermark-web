@@ -1,6 +1,7 @@
 // Only loaded after the existing, calibrated platform detectors find nothing.
 // The OCR worker is disposed before LaMa starts to keep peak iPhone memory down.
 import { claheCanvas } from './clahe.js'
+import { ocrModelAssetUrls } from './ocr-model-cache.js'
 
 const MODEL_FILES = {
   textDetectionModelName: 'PP-OCRv6_small_det',
@@ -120,16 +121,18 @@ function cornerCrop(source, right, bottom) {
 
 export async function detectOcrFallback(source, assetBase, ortBase) {
   const { PaddleOCR } = await import('@paddleocr/paddleocr-js')
-  const ocr = await PaddleOCR.create({
-    lang: 'ch',
-    ocrVersion: 'PP-OCRv6',
-    worker: true,
-    ...MODEL_FILES,
-    textDetectionModelAsset: { url: new URL('ocr/PP-OCRv6_small_det_onnx_infer.tar', assetBase).href },
-    textRecognitionModelAsset: { url: new URL('ocr/PP-OCRv6_small_rec_onnx_infer.tar', assetBase).href },
-    ortOptions: { backend: 'wasm', wasmPaths: ortBase, numThreads: 1, simd: true },
-  })
+  const assets = await ocrModelAssetUrls(assetBase)
+  let ocr
   try {
+    ocr = await PaddleOCR.create({
+      lang: 'ch',
+      ocrVersion: 'PP-OCRv6',
+      worker: true,
+      ...MODEL_FILES,
+      textDetectionModelAsset: { url: assets.urls[0] },
+      textRecognitionModelAsset: { url: assets.urls[1] },
+      ortOptions: { backend: 'wasm', wasmPaths: ortBase, numThreads: 1, simd: true },
+    })
     const corners = [[true, true], [false, true], [true, false], [false, false]]
     // Prefer unmodified pixels. CLAHE is a second pass for faint corner text.
     for (const enhance of [false, true]) {
@@ -142,6 +145,6 @@ export async function detectOcrFallback(source, assetBase, ortBase) {
     }
     return []
   } finally {
-    await ocr.dispose()
+    try { await ocr?.dispose() } finally { assets.release() }
   }
 }

@@ -6,6 +6,7 @@ import { chooseThreadCount } from './thread-policy.js'
 import { isOutOfMemory, runWithOomFallback } from './oom-retry.js'
 import { buildZip } from './zip.js'
 import { InferenceController } from './inference-controller.js'
+import { cacheOcrModels, ocrModelCacheStatus } from './ocr-model-cache.js'
 import {
   StorageCapacityError,
   batchLimitReason,
@@ -83,6 +84,8 @@ const elements = {
   cacheTags: { int8: document.querySelector('#cache-tag-int8'), fp32: document.querySelector('#cache-tag-fp32') },
   currentModelLabel: document.querySelector('#current-model-label'),
   cacheTagCurrent: document.querySelector('#cache-tag-current'),
+  cacheTagOcr: document.querySelector('#cache-tag-ocr'),
+  cacheOcr: document.querySelector('#cache-ocr'),
   modelInputs: [...document.querySelectorAll('input[name="model"]')],
   downloadBar: document.querySelector('#download-bar'),
   downloadStatus: document.querySelector('#download-status'),
@@ -112,6 +115,9 @@ let ruleEnginePromise = null
 
 const assetBase = new URL(import.meta.env.BASE_URL, location.href)
 const ortBase = new URL('ort/', assetBase).href
+let ocrCaching = false
+let ocrCached = false
+let ocrCacheSupported = false
 
 // 沿用原 lama-watermark-web 的键，升级到 v1.0.0 后继续识别既有缓存与恢复偏好。
 const LEGACY_THREAD_PREF_KEY = 'lama-threads'
@@ -613,6 +619,20 @@ async function refreshCacheTags() {
   if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
 }
 
+async function refreshOcrCacheTag() {
+  const status = await ocrModelCacheStatus(assetBase)
+  const tag = elements.cacheTagOcr
+  ocrCacheSupported = status.supported
+  ocrCached = status.supported && status.have === status.total
+  tag.hidden = !status.supported
+  if (status.supported) {
+    tag.textContent = ocrCached ? '已缓存' : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
+    tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.have ? 'partial' : 'missing'}`
+  }
+  elements.cacheOcr.disabled = !status.supported || ocrCached || ocrCaching || state.running
+  elements.cacheOcr.textContent = ocrCached ? 'OCR 模型已缓存' : '提前缓存 OCR 模型'
+}
+
 async function releaseActiveSession() {
   inference.terminate(new Error('推理会话已重建'))
   activeModelId = null
@@ -731,6 +751,8 @@ async function detectRegions(canvas, onOcrFallback) {
       // OCR is only a fallback. A download or runtime error must not alter the original.
       console.warn('OCR 兜底识别失败，保持原图', error)
       ocrError = error
+    } finally {
+      void refreshOcrCacheTag()
     }
   }
   return { regions, gemini, ocrError }
@@ -988,6 +1010,7 @@ function renderQueue() {
   elements.saveAll.textContent = `打包下载（ZIP · ${ready.length} 张）`
   elements.clear.hidden = state.items.length === 0
   elements.runBatch.disabled = state.running || !state.items.some(item => needsProcessing(item))
+  elements.cacheOcr.disabled = state.running || ocrCaching || ocrCached || !ocrCacheSupported
 }
 
 function needsProcessing(item) {
@@ -1443,6 +1466,24 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
   if (state.items.length) void warmUpModel() // 已选图时切模型，立刻预热新模型
 }))
 
+elements.cacheOcr.addEventListener('click', async () => {
+  if (ocrCaching || ocrCached || state.running) return
+  ocrCaching = true
+  elements.cacheOcr.disabled = true
+  elements.cacheOcr.textContent = '正在缓存 OCR 模型…'
+  try {
+    await cacheOcrModels(assetBase, (done, total) => {
+      elements.cacheOcr.textContent = `正在缓存 OCR 模型 · ${done}/${total}`
+    })
+    setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
+  } catch (error) {
+    setStatus('OCR 模型缓存失败', 0, error.message)
+  } finally {
+    ocrCaching = false
+    await refreshOcrCacheTag()
+  }
+})
+
 elements.runBatch.addEventListener('click', () => {
   const targets = state.items.filter(item => needsProcessing(item))
   void runBatch(targets)
@@ -1547,5 +1588,6 @@ void navigator.storage?.persist?.()
   })
   .catch(() => { /* 不支持该 API 就静默跳过 */ })
 void refreshCacheTags()
+void refreshOcrCacheTag()
 void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
 void restoreSelectedFiles()

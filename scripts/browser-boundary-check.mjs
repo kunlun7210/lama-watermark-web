@@ -101,7 +101,7 @@ const databaseState = () => evaluate(`(async () => {
         status: result.status,
       })
     }
-    return { batch: batch?.files?.length || 0, results: results.length, hashes }
+    return { batch: batch?.files?.length || 0, batchIds: batch?.ids || [], results: results.length, hashes }
   } finally {
     database.close()
   }
@@ -196,7 +196,13 @@ const beforeReload = await databaseState()
 assert.equal(beforeReload.batch, 2)
 assert.equal(beforeReload.results, 1)
 await evaluate(`location.reload(); true`)
-const restored = await waitFor(pageState, value => value.ready === 'complete' && value.queue === 2 && value.results === 1 && /^已恢复/.test(value.status), 60000, 'restore corrupt + valid')
+let restored
+try {
+  restored = await waitFor(pageState, value => value.ready === 'complete' && value.queue === 2 && value.results === 1 && /^已恢复/.test(value.status), 60000, 'restore corrupt + valid')
+} catch (error) {
+  console.error('restore diagnostics', JSON.stringify({ database: await databaseState(), browserErrors }))
+  throw error
+}
 const afterReload = await databaseState()
 assert.equal(afterReload.batch, 2)
 assert.equal(afterReload.results, 1)
