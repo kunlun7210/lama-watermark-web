@@ -1,5 +1,25 @@
 # 验证记录
 
+## v2.2.x 验证（2026-09-28）
+
+### 模型与识别链路
+
+- PP-OCRv6-small 检测模型 `public/ocr/PP-OCRv6_small_det_onnx_infer.tar`：9,891,840 bytes，SHA-256 `d218f6fbf0f1c23d2161bd6ac7f5eaa6104fa89955c09290497e31008e2618e4`。
+- PP-OCRv6-small 识别模型 `public/ocr/PP-OCRv6_small_rec_onnx_infer.tar`：21,319,680 bytes，SHA-256 `d267ab077a44a0eedb1ea8f8c542d263f211de8e9d7a029bf9fcfff7e5a88fb1`。`scripts/verify-ocr-assets.mjs` 在 `npm test` 中校验源文件和构建产物，连同 ORT WASM 运行文件的固定哈希一并检查。
+- 先运行现有平台规则；规则未命中才进行本机 OCR。OCR 先扫描四角原图裁切，未命中时对同一裁切运行 `src/clahe.js` 的 CLAHE 局部对比度增强后重扫。`scripts/verify-ocr-fallback.mjs` 检查规则优先级、目标文字门槛、四角范围和浅色文字的 CLAHE 增强。
+
+### 离线与自动检查
+
+- `public/offline-service-worker.js` 缓存应用资源；LaMa 和 OCR 模型可提前缓存。`scripts/browser-offline-check.mjs` 在 Chrome 中检查缓存后断网重载与本地推理。桌面 Playwright WebKit 曾完成离线 LaMa 流程；这些检查不能代替真实 iPhone 飞行模式测试。
+- 已核实的最近一次正式版 CI 是 [v2.2.1 GitHub Actions run 36399607748](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36399607748)，提交 `e6264903ea6d2438e1c2fd3005a5951b158a8843`，构建、`npm test`、浏览器检查和 Pages 部署成功。后续提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
+
+### 豆包 6187 样本修复
+
+- 原图：`/Users/kunlun/Downloads/水印测试集/豆包水印测试图/6187.jpeg`，1280 × 1707，SHA-256 `33ed87ef4670ff3b52970cce22537445a8d9a6de33ee91134377e3ac003f9315`。用户提供的旧版处理结果 `IMG_8821.JPG` 右下角剩余小块深色残影；原图纸张上的浅色纹理本来存在。
+- 规则命中新版豆包模板（`v2`、`solid`），水印框 `(1057, 1637, 201, 44)`。只将新版豆包模板的修复边界由至少 8px 扩至至少 16px；经典豆包模板及其他识别规则未改。
+- 本地生产预览用 Chrome 和 Playwright WebKit 分别对原图完成一次实际推理，均显示“已去除 · 豆包 · 1 处”，页面错误 0；放大检查右下角均无旧结果中的深色残影。两次处理约 7.2 秒和 28.8 秒，时间受本地模型缓存与浏览器环境影响。
+- 用户提供的截图是此前手机端处理效果的反馈。此次候选修复尚未在真实 iPhone Safari 上复测；WebKit 自动化结果只作为桌面引擎验证。
+
 日期：2026-09-22
 
 ## v1.0.0 合并发布验证

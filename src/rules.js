@@ -257,7 +257,11 @@ function detectDoubaoTemplate(gray, width, height, template, variant) {
   if (!matchMode) {
     return { found: false, provider: '豆包', contrast: best.contrast, shapeScore, outlineLeftScore, variant }
   }
-  const repairPadding = Math.max(8, Math.round(shortSide * 0.006))
+  // 新版豆包字形边缘可能超出原有 8px 修复范围，留下小块深色残影。
+  // 只扩大新版模板的修复边界，经典版维持原范围。
+  const repairPadding = variant === 'v2'
+    ? Math.max(16, Math.round(shortSide * 0.012))
+    : Math.max(8, Math.round(shortSide * 0.006))
   const confidence = matchMode === 'outline'
     ? (() => {
         const outline = thresholds.outline
