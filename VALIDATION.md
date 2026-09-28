@@ -11,7 +11,7 @@
 ### 离线与自动检查
 
 - `public/offline-service-worker.js` 缓存应用资源；LaMa 和 OCR 模型可提前缓存。`scripts/browser-offline-check.mjs` 在 Chrome 中检查缓存后断网重载与本地推理。桌面 Playwright WebKit 曾完成离线 LaMa 流程；这些检查不能代替真实 iPhone 飞行模式测试。
-- 已核实的最近一次正式版 CI 是 [v2.2.1 GitHub Actions run 36399607748](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36399607748)，提交 `e6264903ea6d2438e1c2fd3005a5951b158a8843`，构建、`npm test`、浏览器检查和 Pages 部署成功。后续提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
+- [v2.2.2 GitHub Actions run 36403195101](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36403195101) 已成功：提交 `ea013afff5655e85c2b68931dfec9e1c5d9f1bb4`，`npm test`、浏览器检查（含离线检查）和 Pages 部署全部通过。后续文档提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
 
 ### 豆包 6187 样本修复
 
