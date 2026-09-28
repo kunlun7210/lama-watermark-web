@@ -73,7 +73,11 @@ try {
   assert.equal(await page.locator('html').evaluate(node => node.classList.contains('sw-booting')), false)
 
   await page.locator('.model-more summary').click()
-  assert.match(await page.locator('.model-picker').innerText(), /FP32 · 198MB/)
+  const modelPickerCopy = await page.locator('.model-picker').innerText()
+  assert.match(modelPickerCopy, /点选可缓存；下载和内存压力较小。/)
+  assert.match(modelPickerCopy, /点选可缓存；手机端不推荐，无明显提升。/)
+  assert.match(modelPickerCopy, /PP‑OCRv6‑small · 30MB/)
+  assert.doesNotMatch(modelPickerCopy, /无明显视觉提升|约 30MB/)
   const circleStyles = await page.locator('.model-picker .model-choice-circle').evaluateAll(nodes => nodes.map(node => {
     const style = getComputedStyle(node)
     return {
@@ -90,6 +94,7 @@ try {
   assert.equal(await page.locator('.status-card').count(), 0)
   assert.equal(await page.locator('.status-announcer').count(), 1)
   assert.equal(await page.locator('#download-bar').count(), 0, '页面不应存在下载浮窗')
+  assert.equal(await page.locator('#transfer-card').isHidden(), true, '无缓存任务时状态卡应收起')
   await page.waitForFunction(() => ['未缓存', '未确认'].includes(
     document.querySelector('#cache-tag-int8')?.textContent || ''), null, { timeout: 5000 })
   assert.equal(await page.locator('#file-input').isDisabled(), false)
@@ -98,18 +103,31 @@ try {
   await page.locator('#cache-ocr').click()
   await page.waitForFunction(() => [...document.querySelectorAll('input[name="model"]')]
     .every(input => input.disabled))
+  await page.waitForFunction(() => !document.querySelector('#transfer-card')?.hidden)
   assert.equal(await page.locator('#file-input').isDisabled(), false, '缓存 OCR 时仍应可以选择图片')
   assert.equal(await page.locator('#download-bar').count(), 0)
   const cardLayout = await page.evaluate(() => {
     const card = document.querySelector('#transfer-card')
+    const title = document.querySelector('#transfer-title').getBoundingClientRect()
+    const detail = document.querySelector('#transfer-detail').getBoundingClientRect()
     return { position: getComputedStyle(card).position,
+      height: card.getBoundingClientRect().height,
+      copyHeight: document.querySelector('.transfer-copy').getBoundingClientRect().height,
+      rowOffset: Math.abs(title.top - detail.top),
       gap: document.querySelector('.controls').getBoundingClientRect().top - card.getBoundingClientRect().bottom }
   })
   assert.equal(cardLayout.position, 'static')
+  assert.ok(cardLayout.height <= 58, `状态卡过高：${cardLayout.height}px`)
+  assert.ok(cardLayout.copyHeight <= 20, `状态文字未保持单行：${cardLayout.copyHeight}px`)
+  assert.ok(cardLayout.rowOffset <= 1, `进度详情未使用首行右侧空间：${cardLayout.rowOffset}px`)
   assert.ok(cardLayout.gap >= 16, `状态卡与选图区域间距不足：${cardLayout.gap}px`)
+  if (process.env.MODEL_TRANSFER_SCREENSHOT_PATH) {
+    await page.screenshot({ path: process.env.MODEL_TRANSFER_SCREENSHOT_PATH, fullPage: true })
+  }
   await page.waitForFunction(() => document.querySelector('#cache-tag-ocr')?.textContent === '已缓存',
     null, { timeout: 60000 })
   await endLayoutSampling(page, 'OCR 首次缓存')
+  assert.equal(await page.locator('#transfer-card').isHidden(), true, 'OCR 缓存完成后状态卡应收起')
   assert.equal(await page.locator('input[name="model"]:disabled').count(), 0)
   assert.equal(await page.locator('#cache-ocr').isDisabled(), true)
   assert.equal(await page.locator('#ocr-model-hint').textContent(), '文字识别按需自动使用。')
@@ -148,6 +166,7 @@ try {
     && !document.querySelector('input[name="model"][value="int8"]')?.disabled,
   null, { timeout: 120000 })
   await endLayoutSampling(page, 'LaMa 首次缓存')
+  assert.equal(await page.locator('#transfer-card').isHidden(), true, 'LaMa 缓存完成后状态卡应收起')
   assert.equal(await page.locator('input[name="model"]:disabled').count(), 0)
   assert.equal(await page.locator('#download-bar').count(), 0)
   const requestsBeforeCachedClick = networkUrls.length

@@ -52,11 +52,11 @@ header p, .footnote { color: #aab5c8; line-height: 1.65; }
 header p { margin: 8px 0 4px; font-size: 14px; }
 .card { background: rgba(20, 29, 45, .94); border: 1px solid #2b3850; border-radius: 18px; box-shadow: 0 18px 60px rgba(0,0,0,.22); }
 .controls { padding: 16px; display: grid; gap: 12px; }
-.transfer-card { position: static; margin: 0 0 16px; padding: 12px 14px; border-color: #2f6e58; }
-.transfer-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; color: #c7d1e2; font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.transfer-card { position: static; margin: 0 0 16px; padding: 9px 14px; border-color: #2f6e58; }
+.transfer-copy { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 12px; color: #c7d1e2; font-size: 13px; line-height: 18px; font-variant-numeric: tabular-nums; }
 .transfer-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.transfer-card progress { display: block; margin-top: 8px; height: 6px; }
-@media (max-width: 600px) { .transfer-copy { grid-template-columns: 1fr; height: 44px; } }
+.transfer-copy #transfer-detail { text-align: right; }
+.transfer-card progress { display: block; margin-top: 6px; height: 5px; }
 .model-summary { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-summary-label { color: #99a6bb; font-size: 13.5px; }
 .model-summary-value { display: flex; align-items: center; gap: 8px; min-width: 0; }

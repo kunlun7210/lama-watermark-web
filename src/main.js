@@ -219,7 +219,7 @@ function setMetrics(values) {
   elements.metrics.hidden = entries.length === 0
 }
 
-// 卡片位于正常文档流中。首次下载时展开，此后保留高度，避免完成/分段时反复收起。
+// 卡片位于正常文档流中，仅在实际下载、校验或补齐离线文件时展开。
 let transferPaintAt = 0
 function transferProgress(title, ratio = null, detail = '', force = false) {
   const card = document.querySelector('#transfer-card')
@@ -231,6 +231,17 @@ function transferProgress(title, ratio = null, detail = '', force = false) {
   const progress = document.querySelector('#transfer-progress')
   if (ratio === null) progress.removeAttribute('value')
   else progress.value = Math.max(0, Math.min(1, ratio))
+}
+
+function hideTransferProgress() {
+  const card = document.querySelector('#transfer-card')
+  if (!card) return
+  card.hidden = true
+  document.querySelector('#transfer-title').textContent = ''
+  document.querySelector('#transfer-detail').textContent = ''
+  const progress = document.querySelector('#transfer-progress')
+  progress.value = 0
+  transferPaintAt = 0
 }
 
 function modelTransferProgress(model, have, total, index, count) {
@@ -570,7 +581,7 @@ async function fetchModel(model, signal) {
     }
   }
   if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
-  if (!document.querySelector('#transfer-card')?.hidden) transferProgress('模型已就绪', 1, '', true)
+  hideTransferProgress()
   void refreshCacheTags()
   return bytes
 }
@@ -791,7 +802,7 @@ function getSession(model) {
     // 只有最新一代失败才清空，否则会把后来者的状态一起清掉
     if (generation === sessionGeneration) {
       sessionModelId = null
-      if (!document.querySelector('#transfer-card')?.hidden) transferProgress('模型加载失败，可重试', 0, error.message, true)
+      hideTransferProgress()
     }
     throw error
   }).finally(() => {
@@ -1618,12 +1629,11 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
       }
       transferProgress(`正在缓存 ${model.label}`, null, '读取本机分段，补齐缺少的文件', true)
       await cacheLaMaForOffline(model)
-      transferProgress(`${model.label} 已缓存`, 1, '', true)
       setStatus(`${model.label} 已缓存到本机`, 1, '断网后可直接使用')
     } catch (error) {
       setStatus(`${model.label} 缓存失败`, 0, error.message)
-      transferProgress('缓存失败，可重新点选重试', 0, error.message, true)
     } finally {
+      hideTransferProgress()
       manualModelCachingId = null
       syncCacheControls()
       void refreshCacheTags()
@@ -1648,12 +1658,11 @@ elements.cacheOcr.addEventListener('click', () => {
       })
       transferProgress('正在准备 PP-OCRv6-small', null, '缓存离线运行文件', true)
       await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
-      transferProgress('PP-OCRv6-small 已缓存', 1, '', true)
       setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
     } catch (error) {
       setStatus('OCR 模型缓存失败', 0, error.message)
-      transferProgress('缓存失败，可重新点选重试', 0, error.message, true)
     } finally {
+      hideTransferProgress()
       ocrCaching = false
       await refreshOcrCacheTag()
     }
