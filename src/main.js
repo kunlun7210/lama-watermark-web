@@ -642,7 +642,7 @@ async function refreshCacheTags() {
           runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
         } catch (error) { console.warn('LaMa 离线运行文件暂不可用', error) }
       }
-      text = runtime.ready ? '已缓存' : '模型已缓存'
+      text = runtime.ready ? '已缓存' : '缓存不完整'
       className = `model-cache-tag ${runtime.ready ? 'cached' : 'partial'}`
     } else if (status.have === 0) {
       tag.hidden = false
@@ -670,20 +670,26 @@ async function refreshCacheTags() {
 
 async function refreshOcrCacheTag() {
   const status = await ocrModelCacheStatus(assetBase)
-  const runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
+  let runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
+  if (status.supported && status.have === status.total && !runtime.ready && navigator.onLine) {
+    try {
+      await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
+      runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
+    } catch (error) { console.warn('OCR 离线运行文件暂不可用', error) }
+  }
   const tag = elements.cacheTagOcr
   ocrCacheSupported = status.supported
   ocrCached = status.supported && status.have === status.total && runtime.ready
   tag.hidden = !status.supported
   if (status.supported) {
-    tag.textContent = ocrCached ? '已缓存' : status.have === status.total ? '模型已缓存'
+    tag.textContent = ocrCached ? '已缓存' : status.have === status.total ? '缓存不完整'
       : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
     tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.have ? 'partial' : 'missing'}`
   }
   elements.cacheOcr.disabled = !status.supported || ocrCached || ocrCaching || state.running
   elements.cacheOcr.classList.toggle('cached', ocrCached)
   elements.ocrModelHint.textContent = ocrCached
-    ? '文字识别按需自动使用；模型和运行文件已缓存。'
+    ? '文字识别按需自动使用。'
     : '点选后提前缓存；识别时仍会自动使用。'
 }
 

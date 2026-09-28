@@ -105,6 +105,7 @@ await evaluate(`(async () => {
 const result = await evaluate(`(() => {
   const shell = document.querySelector('.shell')
   const preview = document.querySelector('#preview-grid')
+  const statusAnnouncer = document.querySelector('.status-announcer')
   return {
     viewport: [innerWidth, innerHeight, devicePixelRatio],
     userAgent: navigator.userAgent,
@@ -123,6 +124,8 @@ const result = await evaluate(`(() => {
     metricsChildren: document.querySelector('#metrics')?.children.length,
     previewEmpty: preview?.dataset.empty,
     canvasesHidden: [...preview.querySelectorAll('canvas')].every(canvas => getComputedStyle(canvas).display === 'none'),
+    visibleStatusCards: document.querySelectorAll('.status-card').length,
+    statusAnnouncerClip: statusAnnouncer ? getComputedStyle(statusAnnouncer).clipPath : '',
     oldCopyPresent: document.body.innerText.includes('LaMa-ONNX 结果') || document.body.innerText.includes('Gemini 专用还原暂未移植'),
     legacyThreadCap: localStorage.getItem('lama-threads'),
   }
@@ -148,6 +151,8 @@ const valid = result.viewport[0] === 402
   && result.metricsChildren === 0
   && result.previewEmpty === 'true'
   && result.canvasesHidden
+  && result.visibleStatusCards === 0
+  && result.statusAnnouncerClip === 'inset(50%)'
   && !result.oldCopyPresent
   && result.legacyThreadCap === null
   && browserErrors.length === 0

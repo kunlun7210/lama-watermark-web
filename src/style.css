@@ -67,11 +67,26 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-picker > .ocr-model-option { width: 100%; min-height: 0; color: inherit; font-weight: normal; text-align: left; justify-content: flex-start; cursor: pointer; }
 .ocr-model-option:disabled { opacity: 1; cursor: default; }
-.ocr-model-option .model-choice-circle { flex: 0 0 20px; width: 20px; height: 20px; border: 2px solid #8f9bb0; border-radius: 50%; background: #060a10; }
+.model-choice-circle {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 2px solid #8f9bb0;
+  border-radius: 50%;
+  background: #060a10;
+  box-shadow: none;
+}
 .ocr-model-option.cached { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
-.ocr-model-option.cached .model-choice-circle { border-color: #70e0b6; background: #081420; box-shadow: inset 0 0 0 4px #70e0b6; }
+.model-choice-circle:checked,
+.ocr-model-option.cached .model-choice-circle {
+  border-color: #70e0b6;
+  background: radial-gradient(circle, #effff9 0 3px, #4dbb95 4px 100%);
+}
 .model-option:has(input:checked) { border-color: #70e0b6; box-shadow: inset 0 0 0 1px #70e0b6; }
-.model-option input { width: 20px; height: 20px; accent-color: #70e0b6; }
 .model-option > span { display: grid; gap: 4px; }
 .model-option small { color: #99a6bb; line-height: 1.4; }
 /* 型号名与缓存状态必须同一行（手机屏幕窄，多一行就挤）。
@@ -110,7 +125,7 @@ button, .link-button { width: 100%; min-height: 50px; border: 0; border-radius: 
 button { color: #07120e; background: #70e0b6; }
 button:disabled { opacity: .42; }
 .secondary { color: #e6edf8; background: #26344b; }
-.status-card { margin-top: 14px; padding: 16px; }
+.status-announcer { position: fixed; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .download-card { margin-top: 14px; padding: 11px 14px; border-color: #2f6e58; border-radius: 14px; }
 .download-card .status-row { font-size: 13.5px; }
 .download-card progress { margin-top: 8px; height: 6px; }

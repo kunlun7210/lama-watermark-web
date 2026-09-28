@@ -13,6 +13,13 @@
 - `public/offline-service-worker.js` 缓存应用资源；LaMa 和 OCR 模型可提前缓存。`scripts/browser-offline-check.mjs` 在 Chrome 中检查缓存后断网重载与本地推理。桌面 Playwright WebKit 曾完成离线 LaMa 流程；这些检查不能代替真实 iPhone 飞行模式测试。
 - [v2.2.2 GitHub Actions run 36403195101](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36403195101) 已成功：提交 `ea013afff5655e85c2b68931dfec9e1c5d9f1bb4`，`npm test`、浏览器检查（含离线检查）和 Pages 部署全部通过。后续文档提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
 
+### v2.2.3 模型界面回归
+
+- LaMa INT8、LaMa FP32 和 PP-OCRv6-small 使用同一套 20px 自绘圆点；本地 Chrome 逐项比较宽高、边框、圆角和选中背景，三者一致，不再受 iOS 原生单选框外观影响。
+- OCR 模型及离线运行文件齐全时统一显示绿色“已缓存”，说明文字为“文字识别按需自动使用。”；缺少运行文件时显示“缓存不完整”，不会把仅有模型文件误报为可离线使用。
+- 删除原图上方的可见处理状态卡，保留隐藏的无障碍状态播报和真正下载时的进度条。402 × 874 竖屏及 844 × 390 横屏均无页面或模型列表横向溢出。
+- OCR 提前缓存后断网刷新，仍显示“已缓存”和精简说明；本地完整 `npm test`、移动端 UI 检查和浏览器错误检查通过。
+
 ### 豆包 6187 样本修复
 
 - 原图：`/Users/kunlun/Downloads/水印测试集/豆包水印测试图/6187.jpeg`，1280 × 1707，SHA-256 `33ed87ef4670ff3b52970cce22537445a8d9a6de33ee91134377e3ac003f9315`。用户提供的旧版处理结果 `IMG_8821.JPG` 右下角剩余小块深色残影；原图纸张上的浅色纹理本来存在。
