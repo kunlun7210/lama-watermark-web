@@ -4,6 +4,7 @@ const MODEL_FILES = {
   textDetectionModelName: 'PP-OCRv5_mobile_det',
   textRecognitionModelName: 'PP-OCRv5_mobile_rec',
 }
+const PLATFORM_NAMES = ['豆包', '即梦', '千问', '清言', '元宝', '文心', 'GEMINI']
 
 export function normalizedWatermarkText(text) {
   return String(text || '').normalize('NFKC').toUpperCase().replace(/[\s\p{P}\p{S}]/gu, '')
@@ -12,6 +13,13 @@ export function normalizedWatermarkText(text) {
 export function watermarkKind(text) {
   const normalized = normalizedWatermarkText(text)
   if (/小红书号[0-9]{3,}/u.test(normalized)) return '小红书'
+  // A short, isolated brand label in a watermark corner is useful when the
+  // lighter "AI生成" suffix was lost to OCR. Do not match names inside prose.
+  for (const name of PLATFORM_NAMES) {
+    if (normalized === name || normalized === `${name}AI` || normalized === `${name}生成` || normalized === `${name}AI生成`) {
+      return name === 'GEMINI' ? 'Gemini' : name
+    }
+  }
   if (/AI生成/u.test(normalized)) return 'AI生成'
   return null
 }

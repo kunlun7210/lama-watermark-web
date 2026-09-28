@@ -7,7 +7,14 @@ const item = (text, x, y, width, height, score = 0.98) => ({
 })
 
 assert.equal(normalizedWatermarkText('ＡＩ 生 成'), 'AI生成')
-assert.equal(watermarkKind('豆包 AI 生 成'), 'AI生成')
+assert.equal(watermarkKind('豆包 AI 生 成'), '豆包')
+for (const name of ['豆包', '即梦', '千问', '清言', '元宝', '文心']) {
+  assert.equal(watermarkKind(name), name)
+  assert.equal(watermarkKind(`${name}AI`), name)
+}
+assert.equal(watermarkKind('Gemini'), 'Gemini')
+assert.equal(watermarkKind('这是豆包的食谱'), null)
+assert.equal(watermarkKind('千问自己'), null)
 assert.equal(watermarkKind('小红书号：2917353068'), '小红书')
 assert.equal(watermarkKind('小红书号：照片'), null)
 assert.equal(watermarkKind('普通角落文字'), null)
@@ -29,6 +36,12 @@ const split = ocrItemsToRegions([
 ], 100, 200, 1000, 1000)
 assert.equal(split.length, 1)
 assert.equal(split[0].text, '豆包AI生成')
+assert.equal(split[0].provider, '豆包')
+
+const brandOnly = ocrItemsToRegions([item('清言', 15, 12, 40, 18)], 0, 0, 1000, 1000)
+assert.equal(brandOnly.length, 1)
+assert.equal(brandOnly[0].provider, '清言')
+assert.deepEqual(ocrItemsToRegions([item('这是豆包的食谱', 15, 12, 120, 18)], 0, 0, 1000, 1000), [])
 
 assert.deepEqual(ocrItemsToRegions([
   item('AI生成', 20, 20, 90, 20, 0.2),
