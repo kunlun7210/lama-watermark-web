@@ -109,14 +109,56 @@ if (typeof window === 'undefined') {
   const serviceWorkers = navigator.serviceWorker
   if (serviceWorkers && window.isSecureContext) {
     const script = document.currentScript?.src
+    const firstControlPending = !serviceWorkers.controller
+    const bootstrapReloadKey = 'lama-sw-bootstrap-reload'
+    if (!firstControlPending) {
+      try { sessionStorage.removeItem(bootstrapReloadKey) } catch { /* Safari 隐私模式可能禁用存储 */ }
+    }
+    let bootFallback = null
+    const revealPage = () => {
+      if (bootFallback) clearTimeout(bootFallback)
+      bootFallback = null
+      if (!serviceWorkers.controller) {
+        try { sessionStorage.removeItem(bootstrapReloadKey) } catch { /* 忽略 */ }
+      }
+      const wasBooting = document.documentElement.classList.contains('sw-booting')
+      document.documentElement.classList.remove('sw-booting')
+      if (wasBooting) window.dispatchEvent(new Event('lama-sw-boot-ready'))
+    }
+    const reloadOnce = (force = false) => {
+      if ((!serviceWorkers.controller && !force) || window.__lamaNavigationPending) return
+      window.__lamaNavigationPending = true
+      if (firstControlPending) {
+        try { sessionStorage.setItem(bootstrapReloadKey, '1') } catch { /* 忽略 */ }
+      }
+      if (bootFallback) clearTimeout(bootFallback)
+      location.reload()
+    }
+    if (firstControlPending) {
+      // GitHub Pages 需要由 Service Worker 补 COOP/COEP，首开必然接管并刷新一次。
+      // 刷新前先隐藏尚未可用的页面，避免用户看到 UI 绘制后又整体跳回顶部。
+      document.documentElement.classList.add('sw-booting')
+      // 注册被浏览器拦截时仍要能使用基础页面，不能永久停在启动画面。
+      bootFallback = setTimeout(revealPage, 6000)
+    }
     serviceWorkers.addEventListener('controllerchange', () => {
-      if (serviceWorkers.controller) location.reload()
+      reloadOnce()
     })
-    serviceWorkers.register(script).then(() => {
+    serviceWorkers.register(script).then(registration => {
+      let alreadyRetried = false
+      try { alreadyRetried = sessionStorage.getItem(bootstrapReloadKey) === '1' } catch { /* 忽略 */ }
+      // 极少数浏览器已有 active worker 却没有给当前页 controller。只补刷一次，
+      // 防止隐私模式或异常 Service Worker 状态下形成刷新循环。
+      if (firstControlPending && registration.active && !serviceWorkers.controller && !alreadyRetried) reloadOnce(true)
       serviceWorkers.controller?.postMessage({
         type: 'coepCredentialless',
-        value: !(window.chrome || window.netscape),
+        // 服从 index.html 的显式配置。Safari/WebKit 重开后使用 credentialless
+        // 会丢失 crossOriginIsolated，进而让 ORT 多线程不可用；require-corp 最稳。
+        value: window.coi?.coepCredentialless?.() ?? false,
       })
-    }).catch(error => console.warn('离线页面服务注册失败', error))
+    }).catch(error => {
+      revealPage()
+      console.warn('离线页面服务注册失败', error)
+    })
   }
 }

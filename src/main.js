@@ -22,18 +22,27 @@ import {
 const APP_VERSION = __APP_VERSION__
 // 部署新版后自动刷新一次：比对 dist/version.json 与本次构建注入的版本号。
 // 刷新只影响页面本身，Cache Storage 里的模型缓存原样保留。
-void (async () => {
+async function refreshForNewBuild() {
+  if (window.__lamaNavigationPending) return true
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 2000)
   try {
-    const response = await fetch(new URL('version.json', document.baseURI), { cache: 'no-store' })
-    if (!response.ok) return
+    const response = await fetch(new URL('version.json', document.baseURI), {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!response.ok) return false
     const { version } = await response.json()
-    if (!version || version === APP_VERSION) return
+    if (!version || version === APP_VERSION) return false
     const url = new URL(location.href)
-    if (url.searchParams.get('app-build') === version) return
+    if (url.searchParams.get('app-build') === version) return false
     url.searchParams.set('app-build', version)
+    window.__lamaNavigationPending = true
     location.replace(url.href)
-  } catch { /* 网络不可用时保持现状 */ }
-})()
+    return true
+  } catch { return false /* 网络不可用时保持现状 */ }
+  finally { clearTimeout(timeout) }
+}
 
 const MODEL_SIZE = 512
 const INFER_TIMEOUT_MS = 120000
@@ -42,7 +51,6 @@ const MODEL_CACHE_NAME = 'lama-model-v2'
 const CHUNK_RETRIES = 4
 // 模型保留在本仓库，以原 Pages 地址提供同源兜底；jsDelivr 固定提交镜像与
 // Hugging Face 固定 revision 负责跨线路备用，完整拼装后统一校验 SHA-256。
-const STABLE_MODEL_BASE = 'https://kunlun7210.github.io/lama-watermark-web/'
 const MIRROR_REPO = 'kunlun7210/lama-watermark-web@b7cb12e5a1b74a2cf66372f90375683e567035a3'
 const MODELS = {
   int8: {
@@ -121,6 +129,16 @@ let ocrCaching = false
 let ocrCached = false
 let ocrCacheSupported = false
 let manualModelCachingId = null
+let cacheTagRefreshGeneration = 0
+let ocrCacheRefreshGeneration = 0
+
+function syncCacheControls() {
+  const cacheBusy = ocrCaching || !!manualModelCachingId
+  for (const input of elements.modelInputs) input.disabled = cacheBusy || state.running
+  if (elements.cacheOcr) {
+    elements.cacheOcr.disabled = !ocrCacheSupported || ocrCached || cacheBusy || !!sessionPromise || state.running
+  }
+}
 
 // 沿用原 lama-watermark-web 的键，升级到 v1.0.0 后继续识别既有缓存与恢复偏好。
 const LEGACY_THREAD_PREF_KEY = 'lama-threads'
@@ -209,24 +227,56 @@ function updatePreviewVisibility() {
 }
 
 /**
- * 下载进度条：固定在第一屏（header 下方），只在模型准备阶段出现。
+ * 下载进度条固定在视口底部，不参与正文排版；高频下载回调最多每 120ms 绘制一次，
+ * 避免手机上因每个网络分块都改 DOM 而反复重排、重绘。
  * 防御：元素可能因「旧 HTML + 新 JS」的缓存混合态而缺失（Safari 上实测发生过，
  * 4 张全部死于进度条取值），所以任一元素找不到就静默跳过——进度显示永远
  * 不允许影响处理流程本身。
  */
-function setDownloadBar(visible, text, ratio = null, detail = '') {
+let downloadBarPending = null
+let downloadBarTimer = null
+let downloadBarLastPaint = 0
+
+function paintDownloadBar({ visible, text = '', ratio = null, detail = '' }) {
   const bar = elements.downloadBar || document.querySelector('#download-bar')
   if (!bar) return
+  if (!visible) { bar.hidden = true; return }
   const status = elements.downloadStatus || bar.querySelector('#download-status')
   const progress = elements.downloadProgress || bar.querySelector('#download-progress')
   const label = elements.downloadLabel || bar.querySelector('#download-label')
-  if (!status || !progress) return
-  bar.hidden = !visible
-  if (!visible) return
+  if (!status || !progress || !label) { bar.hidden = true; return }
+  bar.hidden = false
   status.textContent = text
   label.textContent = detail
   if (ratio === null) progress.removeAttribute('value')
   else progress.value = Math.max(0, Math.min(1, ratio))
+  downloadBarLastPaint = performance.now()
+}
+
+function flushDownloadBar() {
+  downloadBarTimer = null
+  if (!downloadBarPending) return
+  const update = downloadBarPending
+  downloadBarPending = null
+  paintDownloadBar(update)
+}
+
+function setDownloadBar(visible, text, ratio = null, detail = '') {
+  if (!visible) {
+    if (downloadBarTimer) clearTimeout(downloadBarTimer)
+    downloadBarTimer = null
+    downloadBarPending = null
+    paintDownloadBar({ visible: false })
+    return
+  }
+  downloadBarPending = { visible: true, text, ratio, detail }
+  const bar = elements.downloadBar || document.querySelector('#download-bar')
+  const elapsed = performance.now() - downloadBarLastPaint
+  if (bar?.hidden || elapsed >= 120) {
+    flushDownloadBar()
+  } else if (!downloadBarTimer) {
+    downloadBarTimer = setTimeout(flushDownloadBar, Math.max(0, 120 - elapsed))
+  }
 }
 
 function displayMetrics(item) {
@@ -254,7 +304,8 @@ function progressDetail(loaded, total, index, chunkCount, started, sourceLabel) 
 }
 
 function stableModelUrl(relativePath) {
-  return new URL(relativePath.replace(/^\.?\//, ''), STABLE_MODEL_BASE).href
+  // 线上仍是同一个 Pages 地址；本地预览则使用本地模型，避免测试或开发时绕回线上。
+  return new URL(relativePath.replace(/^\.?\//, ''), assetBase).href
 }
 
 function mirrorUrl(relativePath) {
@@ -311,9 +362,9 @@ async function fetchManifest(model) {
   const cache = await openModelCache()
   const cached = await cache?.match(sameOrigin)
   if (!navigator.onLine && cached) return cached.json()
-  const preferred = preferredDownloadSource()
-  const order = !navigator.onLine ? [sameOrigin]
-    : preferred === 'origin' ? [sameOrigin, mirror] : [mirror, sameOrigin]
+  // 清单很小且已随离线页面缓存：始终先读同源，避免每次打开页面都等待外部 CDN。
+  // 真正的模型分片仍按用户指定和测速结果选择下载源。
+  const order = navigator.onLine ? [sameOrigin, mirror] : [sameOrigin]
   let lastError = null
   for (const url of order) {
     for (let attempt = 0; attempt < (navigator.onLine ? 2 : 1); attempt++) {
@@ -366,6 +417,21 @@ async function readCachedChunk(cache, cacheKey, expectedSize) {
     await cache.delete(cacheKey)
   } catch (error) { console.warn('读取模型缓存失败', error) }
   return null
+}
+
+/** 只检查缓存条目的长度，不把几十到几百 MB 的模型分片复制进 JS 内存。 */
+async function hasCachedChunk(cache, cacheKey, expectedSize) {
+  if (!cache) return false
+  try {
+    const response = await cache.match(cacheKey)
+    if (!response) return false
+    const declaredSize = Number(response.headers.get('content-length'))
+    if (Number.isSafeInteger(declaredSize) && declaredSize === expectedSize) return true
+    const actualSize = (await response.blob()).size
+    if (actualSize === expectedSize) return true
+    await cache.delete(cacheKey)
+  } catch (error) { console.warn('检查模型缓存失败', error) }
+  return false
 }
 
 async function writeCachedChunk(cache, cacheKey, bytes) {
@@ -585,7 +651,7 @@ async function modelCacheStatus(model) {
     const manifest = await fetchManifest(model)
     let have = 0
     for (const chunk of manifest.chunks) {
-      if (await readCachedChunk(cache, chunkCacheKey(chunkRelativePath(model, chunk)), chunk.size)) have++
+      if (await hasCachedChunk(cache, chunkCacheKey(chunkRelativePath(model, chunk)), chunk.size)) have++
     }
     return { supported: true, have, total: manifest.chunks.length, bytes: manifest.totalSize }
   } catch { return { supported: false } }
@@ -602,7 +668,7 @@ async function cacheLaMaForOffline(model) {
     const chunk = manifest.chunks[index]
     const path = chunkRelativePath(model, chunk)
     const key = chunkCacheKey(path)
-    if (!await readCachedChunk(cache, key, chunk.size)) {
+    if (!await hasCachedChunk(cache, key, chunk.size)) {
       if (!navigator.onLine) throw new Error('当前没有网络，缺少的模型分段需联网下载')
       const { bytes } = await downloadChunk(chunk, chunkSources(path, model, offset, manifest), (have) => {
         setDownloadBar(true, `正在缓存 ${model.label}`, (offset + have) / manifest.totalSize,
@@ -624,17 +690,17 @@ const SLOW_SOURCE_BYTES_PER_SECOND = 120 * 1024
 
 /** 把每个模型的缓存状态直接标在模型名后面（不再单独占一行指标） */
 async function refreshCacheTags() {
-  const selected = selectedModel()
-  await Promise.all(Object.values(MODELS).map(async model => {
-    const tag = elements.cacheTags[model.id]
-    if (!tag) return
+  const generation = ++cacheTagRefreshGeneration
+  const selectedAtStart = selectedModel()
+  if (elements.currentModelLabel) elements.currentModelLabel.textContent = selectedAtStart.label
+  const presentations = await Promise.all(Object.values(MODELS).map(async model => {
     const status = await modelCacheStatus(model)
     let text = ''
     let className = 'model-cache-tag'
+    let hidden = false
     if (!status.supported) {
-      tag.hidden = true
+      hidden = true
     } else if (status.have === status.total) {
-      tag.hidden = false
       let runtime = await offlineRuntimeStatus('lama', assetBase, APP_VERSION)
       if (!runtime.ready && navigator.onLine) {
         try {
@@ -645,30 +711,40 @@ async function refreshCacheTags() {
       text = runtime.ready ? '已缓存' : '缓存不完整'
       className = `model-cache-tag ${runtime.ready ? 'cached' : 'partial'}`
     } else if (status.have === 0) {
-      tag.hidden = false
       text = '未缓存'
       className = 'model-cache-tag missing'
     } else {
-      tag.hidden = false
       text = `${status.have}/${status.total} 段`
       className = 'model-cache-tag partial'
     }
-    if (!tag.hidden) {
+    return { model, text, className, hidden }
+  }))
+  // 页面打开、切换模型和缓存完成都可能同时触发检查；只允许最新一轮写 UI。
+  if (generation !== cacheTagRefreshGeneration) return
+  for (const presentation of presentations) {
+    const { model, text, className, hidden } = presentation
+    const tag = elements.cacheTags[model.id]
+    if (!tag) continue
+    tag.hidden = hidden
+    if (!hidden) {
       tag.textContent = text
       tag.className = className
     }
-    if (model.id === selected.id && elements.cacheTagCurrent) {
-      elements.cacheTagCurrent.hidden = tag.hidden
-      if (!tag.hidden) {
-        elements.cacheTagCurrent.textContent = text
-        elements.cacheTagCurrent.className = className
-      }
-    }
-  }))
+  }
+  const selected = selectedModel()
+  const selectedPresentation = presentations.find(item => item.model.id === selected.id)
   if (elements.currentModelLabel) elements.currentModelLabel.textContent = selected.label
+  if (elements.cacheTagCurrent && selectedPresentation) {
+    elements.cacheTagCurrent.hidden = selectedPresentation.hidden
+    if (!selectedPresentation.hidden) {
+      elements.cacheTagCurrent.textContent = selectedPresentation.text
+      elements.cacheTagCurrent.className = selectedPresentation.className
+    }
+  }
 }
 
 async function refreshOcrCacheTag() {
+  const generation = ++ocrCacheRefreshGeneration
   const status = await ocrModelCacheStatus(assetBase)
   let runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
   if (status.supported && status.have === status.total && !runtime.ready && navigator.onLine) {
@@ -677,6 +753,7 @@ async function refreshOcrCacheTag() {
       runtime = await offlineRuntimeStatus('ocr', assetBase, APP_VERSION)
     } catch (error) { console.warn('OCR 离线运行文件暂不可用', error) }
   }
+  if (generation !== ocrCacheRefreshGeneration) return
   const tag = elements.cacheTagOcr
   ocrCacheSupported = status.supported
   ocrCached = status.supported && status.have === status.total && runtime.ready
@@ -686,11 +763,11 @@ async function refreshOcrCacheTag() {
       : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
     tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.have ? 'partial' : 'missing'}`
   }
-  elements.cacheOcr.disabled = !status.supported || ocrCached || ocrCaching || state.running
   elements.cacheOcr.classList.toggle('cached', ocrCached)
   elements.ocrModelHint.textContent = ocrCached
     ? '文字识别按需自动使用。'
     : '点选后提前缓存；识别时仍会自动使用。'
+  syncCacheControls()
 }
 
 async function releaseActiveSession() {
@@ -1070,7 +1147,7 @@ function renderQueue() {
   elements.saveAll.textContent = `打包下载（ZIP · ${ready.length} 张）`
   elements.clear.hidden = state.items.length === 0
   elements.runBatch.disabled = state.running || !state.items.some(item => needsProcessing(item))
-  elements.cacheOcr.disabled = state.running || ocrCaching || ocrCached || !ocrCacheSupported
+  syncCacheControls()
 }
 
 function needsProcessing(item) {
@@ -1487,7 +1564,9 @@ function warmUpModel() {
   const model = selectedModel()
   if (state.running || warmUpStartedFor === model.id) return
   warmUpStartedFor = model.id
-  getSession(model)
+  const task = getSession(model)
+  syncCacheControls()
+  task
     .then(() => {
       if (warmUpStartedFor === model.id) warmUpStartedFor = null
       void refreshCacheTags()
@@ -1496,6 +1575,7 @@ function warmUpModel() {
       if (warmUpStartedFor === model.id) warmUpStartedFor = null
       console.warn('模型预热失败（点「开始批量处理」会重试）', error)
     })
+    .finally(syncCacheControls)
 }
 
 /* ---------------- 事件 ---------------- */
@@ -1528,6 +1608,7 @@ elements.modelInputs.forEach(input => input.addEventListener('change', () => {
 
 elements.modelInputs.forEach(input => input.addEventListener('click', () => {
   if (state.running) return
+  if (ocrCaching) return
   const model = MODELS[input.value]
   if (!model) return
   // 已选图时沿用原有预热流程；未选图时点选卡片即可只下载到持久缓存。
@@ -1537,6 +1618,7 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
     return
   }
   manualModelCachingId = model.id
+  syncCacheControls()
   void (async () => {
     try {
       const status = await modelCacheStatus(model)
@@ -1545,6 +1627,7 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
         setStatus(`${model.label} 已缓存`, 1, '无需重复下载')
         return
       }
+      setDownloadBar(true, `正在准备 ${model.label}`, null, '只缓存缺少的文件')
       await cacheLaMaForOffline(model)
       setStatus(`${model.label} 已缓存到本机`, 1, '断网后可直接使用')
     } catch (error) {
@@ -1552,26 +1635,28 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
     } finally {
       setDownloadBar(false)
       manualModelCachingId = null
+      syncCacheControls()
       void refreshCacheTags()
     }
   })()
 }))
 
 elements.cacheOcr.addEventListener('click', async () => {
-  if (ocrCaching || ocrCached || state.running) return
+  if (ocrCaching || ocrCached || state.running || manualModelCachingId || sessionPromise) return
   ocrCaching = true
-  elements.cacheOcr.disabled = true
-  elements.ocrModelHint.textContent = '正在缓存文字识别模型…'
+  syncCacheControls()
+  setDownloadBar(true, '正在缓存 PP-OCRv6-small', 0, '正在准备文字识别模型')
   try {
     await cacheOcrModels(assetBase, (done, total) => {
-      elements.ocrModelHint.textContent = `正在缓存 · ${done}/${total} 个文件`
+      setDownloadBar(true, '正在缓存 PP-OCRv6-small', done / total, `已缓存 ${done}/${total} 个模型文件`)
     })
-    elements.ocrModelHint.textContent = '正在缓存离线运行文件…'
+    setDownloadBar(true, '正在准备离线运行文件', null, '首次使用只需一次')
     await cacheOfflineRuntime('ocr', assetBase, APP_VERSION)
     setStatus('OCR 模型已缓存到本机', 1, '需要文字识别时会自动使用')
   } catch (error) {
     setStatus('OCR 模型缓存失败', 0, error.message)
   } finally {
+    setDownloadBar(false)
     ocrCaching = false
     await refreshOcrCacheTag()
   }
@@ -1664,23 +1749,37 @@ async function restoreSelectedFiles() {
   }
 }
 
-setMetrics({})
-logThreadCount()
-updatePreviewVisibility()
-const iosMajor = Number((navigator.userAgent.match(/\bOS (\d+)[_.]/) || [])[1] || 0)
-if (iosMajor >= 27) document.documentElement.classList.add('ios-liquid-glass')
-if (elements.appVersion) elements.appVersion.textContent = `v${__APP_SEMVER__} · ${__BUILD_DATE__}`
-// 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
-// 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——
-// 页脚文案已据此写成不依赖该结果的表述（评价第 8 条）。
-void navigator.storage?.persist?.()
-  .then(granted => {
-    console.info(granted
-      ? '已获得持久化存储，模型缓存不易被系统清理'
-      : '未获得持久化存储：空间紧张时模型缓存可能被系统回收，重下即可')
-  })
-  .catch(() => { /* 不支持该 API 就静默跳过 */ })
-void refreshCacheTags()
-void refreshOcrCacheTag()
-void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
-void restoreSelectedFiles()
+let appStarted = false
+async function startApp() {
+  if (appStarted) return
+  appStarted = true
+  // 版本检查先于模型扫描和规则引擎初始化；若即将换到新构建，不在旧页面重复做重活。
+  if (await refreshForNewBuild()) return
+  setMetrics({})
+  logThreadCount()
+  updatePreviewVisibility()
+  const iosMajor = Number((navigator.userAgent.match(/\bOS (\d+)[_.]/) || [])[1] || 0)
+  if (iosMajor >= 27) document.documentElement.classList.add('ios-liquid-glass')
+  if (elements.appVersion) elements.appVersion.textContent = `v${__APP_SEMVER__} · ${__BUILD_DATE__}`
+  syncCacheControls()
+  // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
+  // 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——
+  // 页脚文案已据此写成不依赖该结果的表述（评价第 8 条）。
+  void navigator.storage?.persist?.()
+    .then(granted => {
+      console.info(granted
+        ? '已获得持久化存储，模型缓存不易被系统清理'
+        : '未获得持久化存储：空间紧张时模型缓存可能被系统回收，重下即可')
+    })
+    .catch(() => { /* 不支持该 API 就静默跳过 */ })
+  void refreshCacheTags()
+  void refreshOcrCacheTag()
+  void getRuleEngine().catch(error => console.warn('规则引擎初始化失败', error))
+  void restoreSelectedFiles()
+}
+
+if (document.documentElement.classList.contains('sw-booting')) {
+  window.addEventListener('lama-sw-boot-ready', () => { void startApp() }, { once: true })
+} else {
+  void startApp()
+}

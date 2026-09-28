@@ -13,6 +13,15 @@
 - `public/offline-service-worker.js` 缓存应用资源；LaMa 和 OCR 模型可提前缓存。`scripts/browser-offline-check.mjs` 在 Chrome 中检查缓存后断网重载与本地推理。桌面 Playwright WebKit 曾完成离线 LaMa 流程；这些检查不能代替真实 iPhone 飞行模式测试。
 - [v2.2.3 GitHub Actions run 36409593121](https://github.com/kunlun7210/lama-watermark-web/actions/runs/36409593121) 已成功：提交 `fb07d932365ce0ae6045a858d280ad08f1a1f2b8`，`npm test`、手机横竖屏模型界面、OCR 缓存后断网重载和 Pages 部署全部通过。后续文档提交的状态以 [Deploy GitHub Pages 工作流](https://github.com/kunlun7210/lama-watermark-web/actions/workflows/deploy-pages.yml) 为准。
 
+### v2.2.4 首次打开与缓存稳定性回归
+
+- 下载提示改为固定在视口底部的浮层，并将高频下载回调限制为最多每 120ms 更新一次；模型说明保留固定行高，常见缓存状态保留统一宽度。实际缓存时，浮层出现和消失不再参与正文排版。
+- 全新 402 × 874、3x 手机环境多次实际缓存 PP-OCRv6-small 和 LaMa INT8：Chrome 分别采集 70–72 帧和 33–35 帧，Playwright WebKit 分别采集 60–61 帧和 28–30 帧；模型区、处理按钮、预览区和滚动位置的最大位移均为 **0px**。
+- 首次 Service Worker 接管期间只显示稳定的“正在打开…”画面；接管后最多进行一次必要刷新。启动刷新、版本刷新共用导航锁，并为异常的未受控页面增加单会话重试标记，避免刷新竞争或循环。
+- Safari/WebKit 始终沿用页面明确配置的 `COEP: require-corp`。自动化复现并修复了首次打开隔离正常、再次打开却丢失 `crossOriginIsolated` 的问题；修复后 WebKit 重开仍保持隔离，可继续使用 ONNX Runtime 多线程。
+- 模型状态检查优先读取缓存响应的长度元数据，不再为判断“已缓存”而把 62MB/198MB 分片复制进 JS 内存。并发状态检查只允许最新一轮写界面；LaMa、OCR 和批量处理期间互斥相应缓存控件，避免两套下载争用同一进度提示。
+- Chrome 完成首次接管、真实 OCR + 62MB LaMa 缓存、重复点选不重下、断网导航和资源读取；WebKit 完成真实缓存、正常重开、隔离状态和断网 Cache Storage 检查。两套浏览器均为页面错误 0。真实 iPhone 飞行模式仍需实机复核。
+
 ### v2.2.3 模型界面回归
 
 - LaMa INT8、LaMa FP32 和 PP-OCRv6-small 使用同一套 20px 自绘圆点；本地 Chrome 逐项比较宽高、边框、圆角和选中背景，三者一致，不再受 iOS 原生单选框外观影响。
