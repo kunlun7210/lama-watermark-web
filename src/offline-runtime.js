@@ -29,6 +29,7 @@ export async function offlineRuntimeStatus(kind, assetBase, build) {
     const found = await Promise.all(files.map(file => cache.match(new URL(file, assetBase).href)))
     const shellFiles = [
       'index.html', `assets/app.js?v=${build}`, `assets/app.css?v=${build}`,
+      'assets/ocr-shared.js', 'assets/ort-shared.js', 'assets/rolldown-runtime.js',
       'templates/doubao_logo_mask.png', 'templates/xiaohongshu_label.png',
       'models/int8/manifest.json', 'models/fp32/manifest.json',
     ]

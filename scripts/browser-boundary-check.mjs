@@ -188,13 +188,15 @@ assert.equal(afterOverflow.hashes[0].hash, expectedHash)
 
 // P1：首张损坏时，刷新仍要保留整批和第二张的有效结果。
 await clearPage()
+const cleared = await databaseState()
+assert.equal(cleared.results, 0, `clear left results: ${JSON.stringify(cleared)}`)
 await selectFiles([badFile, cleanFile])
 await waitFor(pageState, value => value.queue === 2 && !value.runDisabled, 30000, 'select corrupt + valid')
 await evaluate(`document.querySelector('#run-batch').click(); true`)
 await waitFor(pageState, value => value.queue === 2 && value.results === 1 && value.failed === 1 && /批量处理完成/.test(value.status), 60000, 'process corrupt + valid')
 const beforeReload = await databaseState()
 assert.equal(beforeReload.batch, 2)
-assert.equal(beforeReload.results, 1)
+assert.equal(beforeReload.results, 1, JSON.stringify(beforeReload))
 await evaluate(`location.reload(); true`)
 let restored
 try {

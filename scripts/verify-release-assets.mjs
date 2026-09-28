@@ -20,6 +20,14 @@ await access(new URL('../dist/assets/app.js', import.meta.url))
 await access(new URL('../dist/assets/app.css', import.meta.url))
 const appBundle = await readFile(new URL('../dist/assets/app.js', import.meta.url), 'utf8')
 assert.match(appBundle, /正在识别水印/)
+for (const chunk of ['ocr-fallback.js', 'dist.js']) {
+  const source = await readFile(new URL(`../dist/assets/${chunk}`, import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /from["']\.\/app\.js["']|import\(["']\.\/app\.js["']\)/,
+    `${chunk} must not re-run the app entry`)
+}
+for (const chunk of ['ocr-shared.js', 'ort-shared.js', 'rolldown-runtime.js']) {
+  await access(new URL(`../dist/assets/${chunk}`, import.meta.url))
+}
 await access(new URL('../dist/assets/worker-entry-C9UNuyOJ.js', import.meta.url))
 const migrationBridge = await readFile(new URL('../dist/assets/index-LGdPcOC7.js', import.meta.url), 'utf8')
 assert.match(migrationBridge, /assets\/app\.js/)

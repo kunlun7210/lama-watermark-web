@@ -38,7 +38,6 @@ function versionPlugin() {
         ocr: [
           'assets/ocr-fallback.js',
           'assets/dist.js',
-          'assets/ort.min.js',
           'ort/ort-wasm-simd-threaded.jsep.mjs',
           'ort/ort-wasm-simd-threaded.jsep.wasm',
         ],
@@ -63,6 +62,12 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/app.js',
         chunkFileNames: 'assets/[name].js',
+        manualChunks(id) {
+          // OCR's lazy chunks must never import the app entry again: loading
+          // app.js without its build query would boot a second UI instance.
+          if (id.includes('/node_modules/onnxruntime-web/')) return 'ort-shared'
+          if (id.endsWith('/src/ocr-model-cache.js') || id.endsWith('/src/imaging.js')) return 'ocr-shared'
+        },
         // OCR's bundled worker is emitted as a JS asset. Keep its own name so it
         // cannot overwrite the stable app.js entry used by cached HTML.
         assetFileNames: asset => asset.name?.endsWith('.js')
