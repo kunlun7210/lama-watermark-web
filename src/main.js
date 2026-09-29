@@ -696,7 +696,7 @@ function applyModelCachePresentation(model, presentation) {
   if (selected.id !== model.id || !elements.cacheTagCurrent) return
   elements.cacheTagCurrent.hidden = presentation.hidden
   if (!presentation.hidden) {
-    elements.cacheTagCurrent.textContent = presentation.text
+    elements.cacheTagCurrent.textContent = presentation.text === '已缓存' ? '已缓存 可离线使用' : presentation.text
     elements.cacheTagCurrent.className = presentation.className
   }
 }

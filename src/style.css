@@ -57,9 +57,9 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .transfer-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .transfer-copy #transfer-detail { text-align: right; }
 .transfer-card progress { display: block; margin-top: 6px; height: 5px; }
-.model-summary { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
+.model-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 11px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-summary-label { color: #99a6bb; font-size: 13.5px; }
-.model-summary-value { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.model-summary-value { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
 .model-summary-value strong { font-size: 14.5px; white-space: nowrap; }
 .model-summary-hint { margin: 0; color: #7b8ba3; font-size: 12px; line-height: 1.5; }
 .model-more > summary { cursor: pointer; color: #7b8ba3; font-size: 12.5px; padding: 2px; list-style: none; }

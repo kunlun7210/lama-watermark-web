@@ -167,6 +167,8 @@ try {
   null, { timeout: 120000 })
   await endLayoutSampling(page, 'LaMa 首次缓存')
   assert.equal(await page.locator('#transfer-card').isHidden(), true, 'LaMa 缓存完成后状态卡应收起')
+  assert.equal(await page.locator('#cache-tag-current').innerText(), '已缓存 可离线使用')
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), '顶部缓存提示不可造成横向溢出')
   assert.equal(await page.locator('input[name="model"]:disabled').count(), 0)
   assert.equal(await page.locator('#download-bar').count(), 0)
   const requestsBeforeCachedClick = networkUrls.length
