@@ -581,7 +581,6 @@ async function fetchModel(model, signal) {
     }
   }
   if (cachedCount) setStatus('模型已就绪', 1, `${cachedCount} 段来自本机缓存，下次打开无需再下载`)
-  hideTransferProgress()
   void refreshCacheTags()
   return bytes
 }
@@ -784,6 +783,24 @@ function getSession(model) {
     await releaseActiveSession()
     const started = performance.now()
     const bytes = await fetchModel(model, controller.signal)
+    if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
+    try {
+      const runtime = await settleWithin(offlineRuntimeStatus('lama', assetBase, APP_VERSION),
+        CACHE_STATUS_TIMEOUT_MS, { ready: false })
+      if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
+      if (!runtime.ready) {
+        transferProgress(`正在准备 ${model.label}`, null, '缓存离线运行文件', true)
+        await cacheOfflineRuntime('lama', assetBase, APP_VERSION)
+      }
+    } catch (error) {
+      // 缓存空间不足等情况仍允许在线处理；完整性徽标保留真实状态。
+      console.warn('离线运行文件缓存未完成', error)
+    } finally {
+      if (generation === sessionGeneration) {
+        hideTransferProgress()
+        void refreshCacheTags()
+      }
+    }
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
     currentThreads = preferredThreads()
