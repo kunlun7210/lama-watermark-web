@@ -71,7 +71,9 @@ header p { margin: 8px 0 4px; font-size: 14px; }
 .model-picker { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .model-option { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid #34445e; border-radius: 13px; background: #101827; }
 .model-picker > .ocr-model-option { width: 100%; min-height: 0; color: inherit; font-weight: normal; text-align: left; justify-content: flex-start; cursor: pointer; }
-.ocr-model-option:disabled { opacity: 1; cursor: default; }
+.ocr-model-option[aria-disabled="true"] { opacity: 1; cursor: default; }
+.ocr-model-option .model-line strong { -webkit-user-select: text; user-select: text; cursor: text; }
+.ocr-model-option:focus-visible { outline: 2px solid #70e0b6; outline-offset: 3px; }
 .model-choice-circle {
   -webkit-appearance: none;
   appearance: none;

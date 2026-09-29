@@ -191,8 +191,8 @@ try {
   const requestsBeforeIncompleteReload = networkUrls.length
   const reloadStarted = Date.now()
   await page.reload({ waitUntil: 'load' })
-  await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '缓存不完整'
-    && document.querySelector('#cache-tag-ocr')?.textContent === '缓存不完整',
+  await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '未缓存'
+    && document.querySelector('#cache-tag-ocr')?.textContent === '未缓存',
   null, { timeout: 7000 })
   const incompleteCheckMs = Date.now() - reloadStarted
   assert.ok(incompleteCheckMs < 7000, `缓存状态检查耗时过长：${incompleteCheckMs}ms`)

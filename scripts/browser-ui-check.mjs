@@ -139,11 +139,12 @@ socket.close()
 const valid = result.viewport[0] === 402
   && result.iosLiquidGlass
   && versionPattern.test(result.version)
-  && result.productTitle === 'Xiaolin 去水印'
-  && result.documentTitle === 'Xiaolin 去水印'
-  && result.homeScreenTitle === 'Xiaolin 去水印'
+  && result.productTitle === 'Xiaolin去水印'
+  && result.documentTitle === 'Xiaolin去水印'
+  && result.homeScreenTitle === 'Xiaolin去水印'
   && result.header.includes('Gemini')
-  && result.footer.includes('Gemini 会优先使用专用还原')
+  && !result.footer.includes('Gemini 会优先使用专用还原')
+  && !result.footer.includes('只在第一次使用时下载模型')
   && result.resultTitle === '处理结果'
   && result.shellPaddingTop === '86.5px'
   && result.eyebrowFontSize === '13px'

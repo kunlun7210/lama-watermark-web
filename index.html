@@ -12,9 +12,9 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Xiaolin 去水印" />
+    <meta name="apple-mobile-web-app-title" content="Xiaolin去水印" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2370e0b6'/%3E%3Cpath d='M16 35h32M22 25h20M27 45h10' stroke='%23081420' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E" />
-    <title>Xiaolin 去水印</title>
+    <title>Xiaolin去水印</title>
     <style>
       html.sw-booting { background: #080d16; }
       html.sw-booting body { visibility: hidden; }
@@ -44,7 +44,7 @@
           <span class="eyebrow">本机浏览器推理 · 图片不会上传</span>
           <span class="app-version" id="app-version"></span>
         </div>
-        <h1>Xiaolin 去水印</h1>
+        <h1>Xiaolin去水印</h1>
         <p>支持 Gemini、豆包、即梦、千问、清言、元宝、文心、小红书。</p>
       </header>
 
@@ -81,13 +81,13 @@
                 <small>点选可缓存；手机端不推荐，无明显提升。</small>
               </span>
             </label>
-            <button id="cache-ocr" class="model-option ocr-model-option" type="button" disabled aria-label="提前缓存 PP-OCRv6-small 文字识别模型">
+            <div id="cache-ocr" class="model-option ocr-model-option" role="button" tabindex="0" aria-disabled="true" aria-label="提前缓存 PP-OCRv6-small 文字识别模型">
               <span class="model-choice-circle" aria-hidden="true"></span>
               <span>
                 <span class="model-line"><strong>PP‑OCRv6‑small · 30MB</strong><em id="cache-tag-ocr" class="model-cache-tag" hidden></em></span>
                 <small id="ocr-model-hint">点选后提前缓存；识别时仍会自动使用。</small>
               </span>
-            </button>
+            </div>
           </div>
         </details>
         <p id="selected-name" class="selected-name" hidden></p>
@@ -125,7 +125,7 @@
         </figure>
       </section>
 
-      <p class="footnote">目前支持去除 Gemini、豆包、即梦、千问、清言、元宝、文心、小红书水印；识别不到时保持原图。<br>Gemini 会优先使用专用还原，质量不足时自动改用 LaMa 局部修复。<br>只在第一次使用时下载模型，下完存进本机缓存，之后关掉浏览器再打开也不用重下；下载中断会自动重试。<br>建议在 Wi-Fi 下把页面「添加到主屏幕」，本页会申请持久化存储以减少缓存被系统清理的可能。</p>
+      <p class="footnote">目前支持去除 Gemini、豆包、即梦、千问、清言、元宝、文心、小红书水印；识别不到时保持原图。<br>建议在 Wi-Fi 下把页面「添加到主屏幕」，本页会申请持久化存储以减少缓存被系统清理的可能。</p>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>

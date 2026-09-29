@@ -135,6 +135,7 @@ function syncCacheControls() {
   for (const input of elements.modelInputs) input.disabled = cacheBusy || state.running
   if (elements.cacheOcr) {
     elements.cacheOcr.disabled = !ocrCacheSupported || ocrCached || cacheBusy || !!sessionPromise || state.running
+    elements.cacheOcr.setAttribute('aria-disabled', String(elements.cacheOcr.disabled))
   }
 }
 
@@ -673,13 +674,12 @@ function modelCachePresentation(status, runtime = null) {
   if (status.total > 0 && status.have === status.total) {
     const ready = runtime?.ready === true
     return {
-      text: ready ? '已缓存' : '缓存不完整',
-      className: `model-cache-tag ${ready ? 'cached' : 'partial'}`,
+      text: ready ? '已缓存' : '未缓存',
+      className: `model-cache-tag ${ready ? 'cached' : 'missing'}`,
       hidden: false,
     }
   }
-  if (status.have === 0) return { text: '未缓存', className: 'model-cache-tag missing', hidden: false }
-  return { text: `${status.have}/${status.total} 段`, className: 'model-cache-tag partial', hidden: false }
+  return { text: '未缓存', className: 'model-cache-tag missing', hidden: false }
 }
 
 function applyModelCachePresentation(model, presentation) {
@@ -741,9 +741,8 @@ async function refreshOcrCacheTag() {
   ocrCached = status.supported && !status.unknown && status.have === status.total && runtime.ready
   tag.hidden = !status.supported
   if (status.supported) {
-    tag.textContent = status.unknown ? '未确认' : ocrCached ? '已缓存' : status.have === status.total ? '缓存不完整'
-      : status.have ? `${status.have}/${status.total} 个文件` : '未缓存'
-    tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.unknown || status.have ? 'partial' : 'missing'}`
+    tag.textContent = status.unknown ? '未确认' : ocrCached ? '已缓存' : '未缓存'
+    tag.className = `model-cache-tag ${ocrCached ? 'cached' : status.unknown ? 'partial' : 'missing'}`
   }
   elements.cacheOcr.classList.toggle('cached', ocrCached)
   elements.ocrModelHint.textContent = ocrCached
@@ -801,6 +800,9 @@ function getSession(model) {
         void refreshCacheTags()
       }
     }
+    if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
+    await refreshOcrCacheTag()
+    if (!ocrCached) await cacheOcrForOffline()
     if (generation !== sessionGeneration) throw new Error('模型已切换，本次加载作废')
     setStatus(`正在初始化 ${model.label}`, null, '请保持 Safari 在前台')
     currentThreads = preferredThreads()
@@ -1464,7 +1466,7 @@ async function saveToAlbum(items) {
       { type: blobs[index].type || (item.status === 'unchanged' ? originalFormat(item).mime : outputFormat(item).mime) },
     ))
     setStatus(`正在打开分享面板（${files.length} 张）`, null, '在面板里选「存储图像」即可存进相册')
-    await navigator.share({ files, title: 'Xiaolin 去水印结果' })
+    await navigator.share({ files, title: 'Xiaolin去水印结果' })
     setStatus('已交给系统保存', 1, `${files.length} 张`)
   } catch (error) {
     if (error.name !== 'AbortError') setStatus(`保存失败：${error.message}`, 1)
@@ -1662,8 +1664,9 @@ elements.modelInputs.forEach(input => input.addEventListener('click', () => {
   })
 }))
 
-elements.cacheOcr.addEventListener('click', () => {
-  if (ocrCaching || ocrCached || state.running || manualModelCachingId || sessionPromise) return
+function cacheOcrForOffline() {
+  if (ocrCachePromise) return ocrCachePromise
+  if (ocrCached) return Promise.resolve()
   ocrCaching = true
   showOcrCacheBusy()
   syncCacheControls()
@@ -1688,6 +1691,20 @@ elements.cacheOcr.addEventListener('click', () => {
   void task.finally(() => {
     if (ocrCachePromise === task) ocrCachePromise = null
   })
+  return task
+}
+
+elements.cacheOcr.addEventListener('click', () => {
+  if (elements.cacheOcr.disabled || ocrCaching || ocrCached || state.running || manualModelCachingId || sessionPromise) return
+  const selection = window.getSelection()
+  if (selection && !selection.isCollapsed && elements.cacheOcr.contains(selection.anchorNode)) return
+  void cacheOcrForOffline()
+})
+
+elements.cacheOcr.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  elements.cacheOcr.click()
 })
 
 elements.runBatch.addEventListener('click', () => {
