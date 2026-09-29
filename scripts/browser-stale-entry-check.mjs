@@ -67,7 +67,10 @@ for (let index = 0; index < legacyEntries.length; index++) {
         resources: performance.getEntriesByType('resource').map(entry => entry.name),
       }))()`)
     } catch { /* 导航中执行上下文会短暂失效 */ }
-    if (result?.ready === 'complete' && /^v\d+\.\d+\.\d+ · \d{4}\.\d{2}\.\d{2}$/.test(result.version)) break
+    // location.href 赋值后旧页面可能仍可读取，必须等待本次旧入口真正加载。
+    if (result?.ready === 'complete' && /[?&]app-build=\d{14}/.test(result.url)
+      && result.resources.some(url => url.includes(`/assets/${legacyEntry.script}`))
+      && /^v\d+\.\d+\.\d+ · \d{4}\.\d{2}\.\d{2}$/.test(result.version)) break
     await sleep(250)
   }
   await unlink(fixturePath).catch(() => {})
