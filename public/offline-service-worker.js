@@ -1,5 +1,5 @@
 /*
- * Offline shell and cross-origin isolation for Xiaolin 去水印.
+ * Offline shell and cross-origin isolation for Luban去水印.
  * COOP/COEP behavior follows coi-serviceworker v0.1.7 (MIT license).
  * __OFFLINE_BUILD__ is replaced with the 14-digit build stamp by Vite.
  */

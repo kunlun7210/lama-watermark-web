@@ -1466,7 +1466,7 @@ async function saveToAlbum(items) {
       { type: blobs[index].type || (item.status === 'unchanged' ? originalFormat(item).mime : outputFormat(item).mime) },
     ))
     setStatus(`正在打开分享面板（${files.length} 张）`, null, '在面板里选「存储图像」即可存进相册')
-    await navigator.share({ files, title: 'Xiaolin去水印结果' })
+    await navigator.share({ files, title: 'Luban去水印结果' })
     setStatus('已交给系统保存', 1, `${files.length} 张`)
   } catch (error) {
     if (error.name !== 'AbortError') setStatus(`保存失败：${error.message}`, 1)

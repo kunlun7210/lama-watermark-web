@@ -1,4 +1,4 @@
-# Xiaolin去水印
+# Luban去水印
 
 面向 iPhone Safari 的免费批量去水印网页。图片、识别和 LaMa 推理都在浏览器本机完成，不需要账号、服务器或常开 Mac。
 
