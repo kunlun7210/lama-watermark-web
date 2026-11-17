@@ -75,3 +75,9 @@ node scripts/browser-zip-check.mjs
 当前实测结果见 [VALIDATION.md](./VALIDATION.md)。历史基线和规则移植记录保留在 [docs/BASELINE-EVALUATION.md](./docs/BASELINE-EVALUATION.md)。
 
 模型与第三方组件许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+
+## 使用与授权
+
+本项目用于个人学习与研究。当前发布不附带项目级开源许可证，项目自有代码的著作权由相应权利人保留。除已有授权或法律另有规定外，未经权利人许可，请勿将项目自有代码用于商业用途或再分发。
+
+LaMa 模型与其他第三方组件继续适用各自的许可证，详见 [第三方许可声明](./THIRD_PARTY_NOTICES.md)。
