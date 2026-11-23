@@ -121,6 +121,7 @@ const result = await evaluate(`(() => {
     resultTitle: document.querySelector('#result')?.closest('figure')?.querySelector('figcaption')?.textContent || '',
     shellPaddingTop: getComputedStyle(shell).paddingTop,
     eyebrowFontSize: getComputedStyle(document.querySelector('.eyebrow')).fontSize,
+    versionFontSize: getComputedStyle(document.querySelector('#app-version')).fontSize,
     modelDetailsOpen: document.querySelector('.model-more')?.open,
     metricsChildren: document.querySelector('#metrics')?.children.length,
     previewEmpty: preview?.dataset.empty,
@@ -148,7 +149,7 @@ const valid = result.viewport[0] === 402
   && !result.footer.includes('只在第一次使用时下载模型')
   && result.resultTitle === '处理结果'
   && result.shellPaddingTop === '86.5px'
-  && result.eyebrowFontSize === '13px'
+  && result.eyebrowFontSize === result.versionFontSize
   && result.modelDetailsOpen === false
   && result.metricsChildren === 0
   && result.previewEmpty === 'true'
