@@ -25,7 +25,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = join(repoRoot, 'dist')
 
 const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'))
-const expectedSemver = `v${pkg.version}`
+const expectedRelease = pkg.version.split('.').slice(0, 2).join('.')
 const localVersion = JSON.parse(await readFile(join(distDir, 'version.json'), 'utf8')).version
 
 let failed = 0
@@ -124,8 +124,8 @@ try {
     cacheEmpty: performance.getEntriesByType('resource').filter(entry => /lama\.part\./.test(entry.name)).length === 0,
   }))
   console.log(`  版本显示：${initial.version} · 状态：${initial.status}`)
-  check('线上页面显示当前语义版本 ' + expectedSemver,
-    new RegExp(`^${expectedSemver.replace(/[.]/g, '\\.')} · \\d{4}\\.\\d{2}\\.\\d{2}$`).test(initial.version), initial.version)
+  check('线上页面显示当前发布版本 ' + expectedRelease,
+    new RegExp(`^${expectedRelease.replace(/[.]/g, '\\.')} · \\d{4}\\.\\d{2}\\.\\d{2}$`).test(initial.version), initial.version)
   check('初始状态为「等待选择图片」', initial.status === '等待选择图片', initial.status)
   check('crossOriginIsolated === true', initial.crossOriginIsolated === true)
   check('冷缓存成立（进入页面前没有任何模型分片）', initial.cacheEmpty === true)

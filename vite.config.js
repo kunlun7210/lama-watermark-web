@@ -6,7 +6,8 @@ import { join } from 'node:path'
 // 页面启动时比对两者，不一致就自动刷新一次（拿到新 HTML/JS），
 // 避免端上「旧 HTML + 新 JS」的缓存混合态；Cache Storage 里的模型缓存不受刷新影响。
 const APP_VERSION = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
-const APP_SEMVER = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+const RELEASE_VERSION = version.split('.').slice(0, 2).join('.')
 const now = new Date()
 const BUILD_DATE = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`
 
@@ -53,7 +54,7 @@ export default defineConfig({
   base: './',
   define: {
     __APP_VERSION__: JSON.stringify(APP_VERSION),
-    __APP_SEMVER__: JSON.stringify(APP_SEMVER),
+    __RELEASE_VERSION__: JSON.stringify(RELEASE_VERSION),
     __BUILD_DATE__: JSON.stringify(BUILD_DATE),
   },
   plugins: [versionPlugin()],

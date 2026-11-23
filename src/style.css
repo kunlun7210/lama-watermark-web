@@ -44,7 +44,7 @@ header { padding: 8px 4px 12px; }
 .eyebrow-row { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; }
 .eyebrow { color: #75d7b4; font-size: 13px; font-weight: 700; letter-spacing: .04em; }
 .app-version { color: #7b8ba3; font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
-h1 { margin: 10px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
+h1 { margin: 60px 0 6px; font-size: clamp(28px, 8vw, 46px); line-height: 1.08; }
 header p, .footnote { color: #aab5c8; line-height: 1.65; }
 /* 平台说明行：字号小一号（16→14px），同时显式收掉浏览器默认的 1em 上下外边距。
    该行在 390pt 宽度下因此从 2 行收成 1 行，加上上面的留白压缩，
@@ -188,7 +188,7 @@ canvas { display: block; width: 100%; height: auto; background: #060a10; }
   /* 横屏高度有限，沿用稳定版的紧凑留白，不额外下移。 */
   .shell { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
   header { padding: 4px 4px 6px; }
-  h1 { margin: 4px 0 3px; font-size: 24px; }
+  h1 { margin: 54px 0 3px; font-size: 24px; }
   header p { margin: 3px 0 2px; }
   .controls { padding: 10px; gap: 8px; }
   .model-picker { gap: 7px; }

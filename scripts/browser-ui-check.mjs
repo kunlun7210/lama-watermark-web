@@ -3,9 +3,10 @@ import { readFile, writeFile } from 'node:fs/promises'
 const port = Number(process.env.CDP_PORT || 9223)
 const targetPrefix = process.env.TEST_URL_PREFIX || 'http://localhost:5173'
 const screenshotPath = process.env.SCREENSHOT_PATH || '/private/tmp/lama-iphone17.png'
-const { version: expectedSemver } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-const escapedSemver = expectedSemver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const versionPattern = new RegExp(`^v${escapedSemver} · \\d{4}\\.\\d{2}\\.\\d{2}$`)
+const { version: packageVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+const releaseVersion = packageVersion.split('.').slice(0, 2).join('.')
+const escapedReleaseVersion = releaseVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const versionPattern = new RegExp(`^${escapedReleaseVersion} · \\d{4}\\.\\d{2}\\.\\d{2}$`)
 const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
 const target = targets.find(item => item.type === 'page' && item.url.startsWith(targetPrefix))
 if (!target) throw new Error(`No page found for ${targetPrefix}`)

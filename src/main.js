@@ -1805,7 +1805,7 @@ async function startApp() {
   updatePreviewVisibility()
   const iosMajor = Number((navigator.userAgent.match(/\bOS (\d+)[_.]/) || [])[1] || 0)
   if (iosMajor >= 27) document.documentElement.classList.add('ios-liquid-glass')
-  if (elements.appVersion) elements.appVersion.textContent = `v${__APP_SEMVER__} · ${__BUILD_DATE__}`
+  if (elements.appVersion) elements.appVersion.textContent = `${__RELEASE_VERSION__} · ${__BUILD_DATE__}`
   syncCacheControls()
   // 尽量申请持久化存储：Safari 对「未加入主屏幕」的站点最多保留 7 天。
   // 返回值要如实处理：被拒也不影响功能，但就不能对外承诺「缓存一定不会被清理」——

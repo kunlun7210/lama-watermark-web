@@ -65,7 +65,7 @@ try {
   await page.waitForFunction(() => crossOriginIsolated
     && navigator.serviceWorker.controller?.scriptURL.includes('/offline-service-worker.js'),
   null, { timeout: 60000 })
-  await page.waitForFunction(() => /^v\d+\.\d+\.\d+/.test(document.querySelector('#app-version')?.textContent || ''),
+  await page.waitForFunction(() => /^\d+\.\d+/.test(document.querySelector('#app-version')?.textContent || ''),
     null, { timeout: 10000 })
   await page.waitForTimeout(250)
   assert.ok(mainFrameNavigations >= 1 && mainFrameNavigations <= 2,
@@ -229,7 +229,7 @@ try {
     await context.setOffline(true)
     await page.reload({ waitUntil: 'load' })
   }
-  await page.waitForFunction(() => /^v\d+\.\d+\.\d+/.test(document.querySelector('#app-version')?.textContent || ''),
+  await page.waitForFunction(() => /^\d+\.\d+/.test(document.querySelector('#app-version')?.textContent || ''),
     null, { timeout: 30000 })
   await page.waitForFunction(() => document.querySelector('#cache-tag-int8')?.textContent === '已缓存'
     && document.querySelector('#cache-tag-ocr')?.textContent === '已缓存',
@@ -279,7 +279,7 @@ try {
   })
   const slowPage = await slowContext.newPage()
   await slowPage.goto(`${base}/?source=origin`, { waitUntil: 'load' })
-  await slowPage.waitForFunction(() => /^v\d+\.\d+\.\d+/.test(
+  await slowPage.waitForFunction(() => /^\d+\.\d+/.test(
     document.querySelector('#app-version')?.textContent || ''), null, { timeout: 60000 })
   assert.equal(await slowPage.locator('#file-input').isDisabled(), false)
   assert.equal(await slowPage.locator('#download-bar').count(), 0)

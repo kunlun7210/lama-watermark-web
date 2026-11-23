@@ -1,7 +1,7 @@
 {
   "name": "luban-watermark-web",
   "private": true,
-  "version": "2.2.9",
+  "version": "2.3.0",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/copy-ort.mjs",
