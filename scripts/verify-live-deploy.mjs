@@ -25,7 +25,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const distDir = join(repoRoot, 'dist')
 
 const pkg = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'))
-const expectedRelease = pkg.version.split('.').slice(0, 2).join('.')
+const expectedRelease = 'v' + pkg.version.split('.').slice(0, 2).join('.')
 const localVersion = JSON.parse(await readFile(join(distDir, 'version.json'), 'utf8')).version
 
 let failed = 0
